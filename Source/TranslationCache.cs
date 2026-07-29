@@ -162,15 +162,22 @@ namespace GlobalAutoTranslator
 			{
 				// Повторная проверка под локом: пока мы ждали, другой поток мог всё сбросить.
 				if (dirtyShards.Count == 0) return;
+
+				var shards = new List<string>(dirtyShards.Keys);
+				if (shards.Count == 0) return;
+
+				// Снимаем флаги СРАЗУ под локом. Если Put() прилетит во время записи —
+				// он пометит шард грязным заново, и новые данные уйдут следующим Flush().
+				for (int i = 0; i < shards.Count; i++)
+				{
+					byte ignored;
+					dirtyShards.TryRemove(shards[i], out ignored);
+				}
+
 				try
 				{
 					Directory.CreateDirectory(CacheDir);
 
-					var shards = new List<string>(dirtyShards.Keys);
-					if (shards.Count == 0) return;
-
-					// Буфер на каждый грязный шард. Заполняем ОДНИМ проходом по кэшу,
-					// а не проходом на каждый шард: было O(шарды x записи), стало O(записи).
 					var buffers = new Dictionary<string, StringBuilder>(shards.Count, StringComparer.Ordinal);
 					for (int i = 0; i < shards.Count; i++)
 						buffers[shards[i]] = new StringBuilder(8192);
@@ -198,16 +205,12 @@ namespace GlobalAutoTranslator
 						File.WriteAllText(tmp, kv.Value.ToString(), encoding);
 						if (File.Exists(path)) File.Delete(path);
 						File.Move(tmp, path);
-
-						// Снимаем флаг только после успешной записи именно этого шарда.
-						// Если Put прилетел во время записи — шард снова станет грязным
-						// и попадёт в следующий Flush, ничего не потеряется.
-						byte ignored;
-						dirtyShards.TryRemove(kv.Key, out ignored);
 					}
 				}
 				catch (Exception e)
 				{
+					// Возвращаем флаги обратно, чтобы при ошибке диск данные не потерялись
+					for (int i = 0; i < shards.Count; i++) dirtyShards[shards[i]] = 1;
 					GATLog.Warn("Не удалось сохранить кэш: " + e);
 				}
 			}

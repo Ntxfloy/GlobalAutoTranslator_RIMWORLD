@@ -98,19 +98,58 @@ namespace GlobalAutoTranslator
 			return total;
 		}
 
+		private static bool IsValidXmlName(string s)
+		{
+			if (string.IsNullOrEmpty(s)) return false;
+
+			char c0 = s[0];
+			if (!(char.IsLetter(c0) || c0 == '_')) return false;
+
+			for (int i = 1; i < s.Length; i++)
+			{
+				char c = s[i];
+				if (char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.') continue;
+				return false;
+			}
+
+			// Префикс "xml" в любом регистре зарезервирован спецификацией.
+			if (s.Length >= 3
+				&& (s[0] == 'x' || s[0] == 'X')
+				&& (s[1] == 'm' || s[1] == 'M')
+				&& (s[2] == 'l' || s[2] == 'L')) return false;
+
+			return true;
+		}
+
 		private static int ExportKeyed(string outDir)
 		{
 			var sb = new StringBuilder();
 			int count = 0;
+			int skipped = 0;
+			string firstBad = null;
+
 			foreach (var kv in ObservedKeyed)
 			{
+				if (!IsValidXmlName(kv.Key))
+				{
+					skipped++;
+					if (firstBad == null) firstBad = kv.Key;
+					continue;
+				}
+
 				string ru;
 				if (!TranslationCache.TryGet("keyed", kv.Value, out ru)) continue;
-				sb.Append("    <").Append(kv.Key).Append('>')
+
+				sb.Append("  <").Append(kv.Key).Append('>')
 				  .Append(Xml(ru))
 				  .Append("</").Append(kv.Key).Append(">\r\n");
 				count++;
 			}
+
+			if (skipped > 0)
+				GATLog.Warn("Keyed-ключей пропущено как невалидные имена XML: " + skipped +
+							" (например \"" + firstBad + "\"). Они не попадут в экспорт.");
+
 			if (count > 0) WriteLanguageData(Path.Combine(outDir, "GAT_Generated.xml"), sb.ToString());
 			return count;
 		}
@@ -118,6 +157,7 @@ namespace GlobalAutoTranslator
 		private static int TryWrite(StringBuilder sb, string tag, string value, string context)
 		{
 			if (string.IsNullOrEmpty(value)) return 0;
+			if (!IsValidXmlName(tag)) return 0;   // кривой defName сломал бы весь файл
 
 			// Случай 1: в кэше есть перевод для этого английского текста.
 			string ru;

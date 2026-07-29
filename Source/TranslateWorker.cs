@@ -32,6 +32,12 @@ namespace GlobalAutoTranslator
 		private static int flushCounter;
 		private static int consecutiveFailedBatches;
 
+		/// <summary>Сколько рабочих потоков реально живо. 0 — пул остановлен.</summary>
+		public static int ActiveThreads
+		{
+			get { var t = threads; return t == null ? 0 : t.Length; }
+		}
+
 		public static int Pending { get { return queue.Count; } }
 		public static int InFlight { get { return inFlight.Count; } }
 		public static int Failed { get { return quarantine.Count; } }
@@ -41,24 +47,67 @@ namespace GlobalAutoTranslator
 		public static void Start()
 		{
 			if (running) return;
+
+			// Подстраховка: если прошлый Stop() не дождался потоков, добиваем здесь,
+			// иначе получим два пула, жующих одну очередь.
+			JoinThreads(1000);
+
 			running = true;
+			Paused = false;
+
 			var s = GATMod.Settings;
 			int n = Math.Max(1, Math.Min(4, s.maxConcurrent));
-			threads = new Thread[n];
+			var pool = new Thread[n];
 			for (int i = 0; i < n; i++)
 			{
-				threads[i] = new Thread(Loop);
-				threads[i].IsBackground = true;
-				threads[i].Name = "GAT-Worker-" + i;
-				threads[i].Start();
+				pool[i] = new Thread(Loop);
+				pool[i].IsBackground = true;
+				pool[i].Name = "GAT-Worker-" + i;
 			}
+			threads = pool;
+			for (int i = 0; i < n; i++) pool[i].Start();
+
 			GATLog.Msg("Запущено потоков перевода: " + n);
 		}
 
 		public static void Stop()
 		{
-			running = false;
+			if (!running)
+			{
+				TranslationCache.Flush();
+				return;
+			}
+
+			running = false;      // volatile — потоки увидят на следующей итерации Loop
+			JoinThreads(2000);    // общий бюджет ожидания, не на каждый поток
 			TranslationCache.Flush();
+			GATLog.Msg("Пул потоков перевода остановлен.");
+		}
+
+		/// <summary>Перезапуск с текущими настройками (например, после смены maxConcurrent).</summary>
+		public static void Restart()
+		{
+			Stop();
+			Start();
+		}
+
+		/// <summary>Дожидается завершения потоков в пределах общего бюджета в миллисекундах.</summary>
+		private static void JoinThreads(int totalBudgetMs)
+		{
+			var local = threads;
+			threads = null;
+			if (local == null) return;
+
+			var sw = System.Diagnostics.Stopwatch.StartNew();
+			for (int i = 0; i < local.Length; i++)
+			{
+				Thread t = local[i];
+				if (t == null) continue;
+				int left = totalBudgetMs - (int)sw.ElapsedMilliseconds;
+				if (left <= 0) break;
+				try { if (t.IsAlive) t.Join(left); }
+				catch { }
+			}
 		}
 
 		/// <summary>Ставит строку в очередь, если её ещё нет в кэше и не в работе.</summary>

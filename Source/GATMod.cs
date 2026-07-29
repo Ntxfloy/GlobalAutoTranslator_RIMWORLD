@@ -80,7 +80,11 @@ namespace GlobalAutoTranslator
 			Settings.batchSize = (int)list.SliderLabeled(
 				"Строк в одном запросе: " + Settings.batchSize, Settings.batchSize, 5f, 120f);
 			Settings.maxConcurrent = (int)list.SliderLabeled(
-				"Параллельных запросов: " + Settings.maxConcurrent, Settings.maxConcurrent, 1f, 4f);
+				"Параллельных запросов: " + Settings.maxConcurrent +
+				(TranslateWorker.ActiveThreads > 0 && TranslateWorker.ActiveThreads != Mathf.Clamp(Settings.maxConcurrent, 1, 4)
+					? "  (сейчас работает " + TranslateWorker.ActiveThreads + ", применится при закрытии окна)"
+					: ""),
+				Settings.maxConcurrent, 1f, 4f);
 			Settings.timeoutSeconds = (int)list.SliderLabeled(
 				"Таймаут, сек: " + Settings.timeoutSeconds, Settings.timeoutSeconds, 15f, 300f);
 
@@ -143,6 +147,14 @@ namespace GlobalAutoTranslator
 		{
 			base.WriteSettings();
 			TranslationCache.Flush();
+
+			// Число потоков читается только в Start(), поэтому пул надо пересобрать.
+			int want = Mathf.Clamp(Settings.maxConcurrent, 1, 4);
+			if (TranslateWorker.ActiveThreads > 0 && TranslateWorker.ActiveThreads != want)
+			{
+				TranslateWorker.Restart();
+				Messages.Message("Пул потоков перезапущен: " + want, MessageTypeDefOf.TaskCompletion, false);
+			}
 		}
 	}
 }
