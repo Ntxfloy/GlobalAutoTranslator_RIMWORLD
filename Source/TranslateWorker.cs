@@ -32,6 +32,10 @@ namespace GlobalAutoTranslator
 		private static int flushCounter;
 		private static int consecutiveFailedBatches;
 
+		// Номер поколения пула. Каждый Start() инкрементит. Поток, чьё поколение
+		// устарело, обязан умереть, даже если running успел стать true заново.
+		private static int generation;
+
 		/// <summary>Сколько рабочих потоков реально живо. 0 — пул остановлен.</summary>
 		public static int ActiveThreads
 		{
@@ -54,20 +58,24 @@ namespace GlobalAutoTranslator
 
 			running = true;
 			Paused = false;
+			Interlocked.Exchange(ref consecutiveFailedBatches, 0);
+
+			int myGen = Interlocked.Increment(ref generation);
 
 			var s = GATMod.Settings;
 			int n = Math.Max(1, Math.Min(4, s.maxConcurrent));
 			var pool = new Thread[n];
 			for (int i = 0; i < n; i++)
 			{
-				pool[i] = new Thread(Loop);
+				int threadIdx = i;
+				pool[i] = new Thread(() => Loop(myGen));
 				pool[i].IsBackground = true;
-				pool[i].Name = "GAT-Worker-" + i;
+				pool[i].Name = "GAT-Worker-" + myGen + "-" + threadIdx;
 			}
 			threads = pool;
 			for (int i = 0; i < n; i++) pool[i].Start();
 
-			GATLog.Msg("Запущено потоков перевода: " + n);
+			GATLog.Msg("Запущено потоков перевода: " + n + " (поколение " + myGen + ")");
 		}
 
 		public static void Stop()
@@ -78,8 +86,9 @@ namespace GlobalAutoTranslator
 				return;
 			}
 
-			running = false;      // volatile — потоки увидят на следующей итерации Loop
-			JoinThreads(2000);    // общий бюджет ожидания, не на каждый поток
+			running = false;                       // volatile — потоки увидят на следующей итерации Loop
+			Interlocked.Increment(ref generation); // осиротевшие потоки не оживут, даже если Start() вернёт running = true
+			JoinThreads(2000);                     // общий бюджет ожидания, не на каждый поток
 			TranslationCache.Flush();
 			GATLog.Msg("Пул потоков перевода остановлен.");
 		}
@@ -136,18 +145,18 @@ namespace GlobalAutoTranslator
 			});
 		}
 
-		private static void Loop()
+		private static void Loop(int myGen)
 		{
-			while (running)
+			while (running && Volatile.Read(ref generation) == myGen)
 			{
 				try
 				{
-					if (Paused) { Thread.Sleep(500); continue; }
+					if (Paused) { NapUntil(500, myGen); continue; }
 
 					var batch = DrainBatch();
-					if (batch == null) { Thread.Sleep(400); continue; }
+					if (batch == null) { NapUntil(400, myGen); continue; }
 
-					ProcessBatch(batch);
+					ProcessBatch(batch, myGen);
 
 					// Периодический сброс кэша на диск, чтобы не потерять работу при вылете.
 					if (Interlocked.Increment(ref flushCounter) % 5 == 0)
@@ -160,9 +169,24 @@ namespace GlobalAutoTranslator
 				catch (Exception e)
 				{
 					GATLog.Warn("Сбой в воркере: " + e);
-					Thread.Sleep(1000);
+					NapUntil(1000, myGen);
 				}
 			}
+		}
+
+		/// <summary>Сон, который просыпается на остановке пула. Возвращает false, если пора умирать.</summary>
+		private static bool NapUntil(int ms, int myGen)
+		{
+			const int step = 200;
+			int slept = 0;
+			while (slept < ms)
+			{
+				if (!running || Volatile.Read(ref generation) != myGen) return false;
+				int chunk = Math.Min(step, ms - slept);
+				Thread.Sleep(chunk);
+				slept += chunk;
+			}
+			return running && Volatile.Read(ref generation) == myGen;
 		}
 
 		/// <summary>Набирает батч с одинаковым context.</summary>
@@ -187,7 +211,7 @@ namespace GlobalAutoTranslator
 			return batch;
 		}
 
-		private static void ProcessBatch(List<TranslateJob> batch)
+		private static void ProcessBatch(List<TranslateJob> batch, int myGen)
 		{
 			var s = GATMod.Settings;
 			var items = new Dictionary<string, string>(batch.Count);
@@ -229,7 +253,7 @@ namespace GlobalAutoTranslator
 				}
 
 				int delay = 2000 * (int)Math.Pow(2, Math.Min(4, fails - 1));
-				Thread.Sleep(delay);
+				NapUntil(delay, myGen);
 				return;
 			}
 

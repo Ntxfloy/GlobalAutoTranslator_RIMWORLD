@@ -152,8 +152,11 @@ namespace GlobalAutoTranslator
 			int want = Mathf.Clamp(Settings.maxConcurrent, 1, 4);
 			if (TranslateWorker.ActiveThreads > 0 && TranslateWorker.ActiveThreads != want)
 			{
-				TranslateWorker.Restart();
-				Messages.Message("Пул потоков перезапущен: " + want, MessageTypeDefOf.TaskCompletion, false);
+				Messages.Message("Пул потоков перезапускается: " + want, MessageTypeDefOf.TaskCompletion, false);
+				var t = new System.Threading.Thread(TranslateWorker.Restart);
+				t.IsBackground = true;
+				t.Name = "GAT-Restart";
+				t.Start();
 			}
 		}
 	}
