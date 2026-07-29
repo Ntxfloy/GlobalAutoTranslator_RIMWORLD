@@ -1,16 +1,31 @@
 @echo off
 chcp 65001 >nul
 REM =====================================================================
-REM  Запуск CLIProxyAPI. Положи этот файл рядом с cli-proxy-api.exe
-REM  или задай переменную PROXYDIR под свой путь.
+REM  Запуск CLIProxyAPI. Прокси ищется в таком порядке:
+REM    1) переменная окружения PROXYDIR
+REM    2) папка этого батника
+REM    3) подпапка CLIPROXY рядом с батником, на уровень выше, на два выше
 REM =====================================================================
 
-if "%PROXYDIR%"=="" set PROXYDIR=D:\Ayder_dontdelete\CLIPROXY
-if not exist "%PROXYDIR%\cli-proxy-api.exe" set PROXYDIR=%~dp0..\..\CLIPROXY
+if defined PROXYDIR goto :check
 
+for %%D in (
+  "%~dp0."
+  "%~dp0CLIPROXY"
+  "%~dp0..\CLIPROXY"
+  "%~dp0..\..\CLIPROXY"
+  "D:\Ayder_dontdelete\CLIPROXY"
+) do if not defined PROXYDIR if exist "%%~fD\cli-proxy-api.exe" set "PROXYDIR=%%~fD"
+
+if not defined PROXYDIR set "PROXYDIR=%~dp0."
+
+:check
 if not exist "%PROXYDIR%\cli-proxy-api.exe" (
   echo [ОШИБКА] cli-proxy-api.exe не найден.
-  echo Задай переменную окружения PROXYDIR или положи прокси рядом с папкой мода.
+  echo Искали в: "%PROXYDIR%"
+  echo Задай переменную окружения PROXYDIR с путём к папке CLIProxyAPI,
+  echo либо положи этот файл рядом с cli-proxy-api.exe.
+  echo Если качал архив — распакуй его полностью, запуск прямо из ZIP не работает.
   pause
   exit /b 1
 )
