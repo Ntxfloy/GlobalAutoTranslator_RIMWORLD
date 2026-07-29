@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
 REM =====================================================================
-REM  Запуск CLIProxyAPI. Прокси ищется в таком порядке:
-REM    1) переменная окружения PROXYDIR
-REM    2) папка этого батника
-REM    3) подпапка CLIPROXY рядом с батником, на уровень выше, на два выше
+REM  Start CLIProxyAPI. Search order:
+REM    1) PROXYDIR env var
+REM    2) Current script dir
+REM    3) CLIPROXY subfolders
 REM =====================================================================
 
 if defined PROXYDIR goto :check
@@ -21,16 +21,14 @@ if not defined PROXYDIR set "PROXYDIR=%~dp0."
 
 :check
 if not exist "%PROXYDIR%\cli-proxy-api.exe" (
-  echo [ОШИБКА] cli-proxy-api.exe не найден.
-  echo Искали в: "%PROXYDIR%"
-  echo Задай переменную окружения PROXYDIR с путём к папке CLIProxyAPI,
-  echo либо положи этот файл рядом с cli-proxy-api.exe.
-  echo Если качал архив — распакуй его полностью, запуск прямо из ZIP не работает.
+  echo [ERROR] cli-proxy-api.exe not found.
+  echo Searched path: "%PROXYDIR%"
+  echo Please set PROXYDIR environment variable or place cli-proxy-api.exe near this script.
   pause
   exit /b 1
 )
 
 cd /d "%PROXYDIR%"
-echo Запуск прокси на http://127.0.0.1:8317 ...
+echo Starting CLIProxyAPI on http://127.0.0.1:8317 ...
 cli-proxy-api.exe --config config.yaml
 pause
