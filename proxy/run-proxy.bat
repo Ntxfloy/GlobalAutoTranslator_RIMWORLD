@@ -2,19 +2,20 @@
 chcp 65001 >nul
 REM =====================================================================
 REM  Запуск CLIProxyAPI. Положи этот файл рядом с cli-proxy-api.exe
-REM  и правь PROXYDIR под свой путь, если запускаешь из другого места.
+REM  или задай переменную PROXYDIR под свой путь.
 REM =====================================================================
 
-set PROXYDIR=D:\Ayder_dontdelete\CLIPROXY
+if "%PROXYDIR%"=="" set PROXYDIR=D:\Ayder_dontdelete\CLIPROXY
+if not exist "%PROXYDIR%\cli-proxy-api.exe" set PROXYDIR=%~dp0..\..\CLIPROXY
 
-cd /d "%PROXYDIR%"
-if not exist cli-proxy-api.exe (
-  echo [ОШИБКА] cli-proxy-api.exe не найден в %PROXYDIR%
-  echo Распакуй архив полностью, запуск прямо из ZIP не работает.
+if not exist "%PROXYDIR%\cli-proxy-api.exe" (
+  echo [ОШИБКА] cli-proxy-api.exe не найден.
+  echo Задай переменную окружения PROXYDIR или положи прокси рядом с папкой мода.
   pause
   exit /b 1
 )
 
+cd /d "%PROXYDIR%"
 echo Запуск прокси на http://127.0.0.1:8317 ...
 cli-proxy-api.exe --config config.yaml
 pause
