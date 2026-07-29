@@ -1,0 +1,12 @@
+# IDE and OS
+.vs/
+.idea/
+.DS_Store
+Thumbs.db
+*.user
+*.suo
+
+# Build outputs (keep Assemblies/GlobalAutoTranslator.dll)
+bin/
+obj/
+*.tmp

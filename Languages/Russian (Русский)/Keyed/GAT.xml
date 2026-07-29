@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+
+  <GAT.SettingsTitle>Global Auto Translator</GAT.SettingsTitle>
+  <GAT.QueueStatus>В очереди на перевод: {0}</GAT.QueueStatus>
+  <GAT.CacheStatus>В кэше строк: {0}</GAT.CacheStatus>
+  <GAT.ExportDone>Экспорт завершён: {0}</GAT.ExportDone>
+
+</LanguageData>
