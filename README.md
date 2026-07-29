@@ -26,16 +26,29 @@
 
 1. Установи **Visual Studio 2022 Community** → рабочая нагрузка «Разработка классических приложений .NET».
 2. Открой `Source/GlobalAutoTranslator.csproj`.
-3. **Обязательно** поправь в `.csproj` строку `<RimWorldManaged>` под свой путь игры:
+3. Путь к игре определяется автоматически (типовые папки Steam на C:/D:/E:).
+   Если игра лежит в другом месте — задай переменную окружения `RIMWORLD_MANAGED`
+   или пропиши свойство `RimWorldManaged` прямо в `.csproj`:
    ```
    ...\steamapps\common\RimWorld\RimWorldWin64_Data\Managed
    ```
 4. `Build` → результат сам ляжет в `Assemblies/GlobalAutoTranslator.dll`.
+   Harmony подтягивается NuGet-пакетом `Lib.Harmony.Ref` — он reference-only,
+   `0Harmony.dll` в `Assemblies/` не копируется. Так и должно быть.
 5. Положи всю папку `GlobalAutoTranslator` в `steamapps\common\RimWorld\Mods\`.
 6. В игре включи **Harmony**, затем этот мод (лучше сразу после Harmony, до всего остального).
 
-Если NuGet недоступен, вместо `PackageReference Lib.Harmony.Ref` добавь ссылку на `0Harmony.dll`
-из папки мода Harmony с `Copy Local = False`. **Никогда не клади `0Harmony.dll` в свой `Assemblies/`.**
+Если NuGet недоступен, используй `build.ps1` — он линкует `0Harmony.dll` напрямую
+из папки мода Harmony и сам находит игру:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1 -RimWorldRoot "E:\Games\RimWorld"
+powershell -ExecutionPolicy Bypass -File build.ps1 -NoInstall
+```
+
+**Никогда не клади `0Harmony.dll` в свой `Assemblies/`** — это ломает Harmony
+у всех остальных модов в сборке.
 
 ---
 

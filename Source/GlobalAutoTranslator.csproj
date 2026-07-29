@@ -6,19 +6,35 @@
     <RootNamespace>GlobalAutoTranslator</RootNamespace>
     <LangVersion>latest</LangVersion>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <EnableDefaultItems>true</EnableDefaultItems>
     <DebugType>none</DebugType>
-    <!-- Готовая dll сразу кладётся в папку мода -->
     <OutputPath>..\Assemblies\</OutputPath>
   </PropertyGroup>
 
-  <!-- ================================================================
-       ВАЖНО: поправь RimWorldManaged под свой путь установки игры.
-       Обычный Steam-путь для Windows указан ниже.
-       ================================================================ -->
+  <!-- Путь к Managed игры.
+       1) Можно задать переменную окружения RIMWORLD_MANAGED и ничего тут не трогать.
+       2) Иначе перебираются типовые пути установки Steam. -->
   <PropertyGroup>
+    <RimWorldManaged Condition="'$(RimWorldManaged)' == ''">$(RIMWORLD_MANAGED)</RimWorldManaged>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(RimWorldManaged)' == '' AND Exists('C:\Program Files (x86)\Steam\steamapps\common\RimWorld\RimWorldWin64_Data\Managed')">
     <RimWorldManaged>C:\Program Files (x86)\Steam\steamapps\common\RimWorld\RimWorldWin64_Data\Managed</RimWorldManaged>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(RimWorldManaged)' == '' AND Exists('C:\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed')">
+    <RimWorldManaged>C:\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed</RimWorldManaged>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(RimWorldManaged)' == '' AND Exists('D:\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed')">
+    <RimWorldManaged>D:\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed</RimWorldManaged>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(RimWorldManaged)' == '' AND Exists('E:\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed')">
+    <RimWorldManaged>E:\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed</RimWorldManaged>
+  </PropertyGroup>
+
+  <Target Name="CheckRimWorldPath" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(RimWorldManaged)' == '' OR !Exists('$(RimWorldManaged)')"
+           Text="Не найдена папка Managed RimWorld. Задай переменную окружения RIMWORLD_MANAGED или пропиши свой путь в свойстве RimWorldManaged в этом .csproj." />
+  </Target>
 
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
@@ -37,11 +53,12 @@
       <HintPath>$(RimWorldManaged)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="System.Net.Http" />
   </ItemGroup>
 
+  <!-- Lib.Harmony.Ref — reference-only пакет: 0Harmony.dll НЕ копируется в Assemblies.
+       Это критично: свой 0Harmony.dll в моде ломает Harmony у всех остальных модов. -->
   <ItemGroup>
-    <PackageReference Include="Lib.Harmony.Ref" Version="2.3.3" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Lib.Harmony.Ref" Version="2.3.3" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>

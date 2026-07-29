@@ -1,38 +1,47 @@
 # =====================================================================
-#  ДОПИСАТЬ В КОНЕЦ СВОЕГО config.yaml от CLIProxyAPI
-#  Не заменять файл целиком — потеряешь путь к OAuth-токенам Antigravity.
-#  Отступы — ТОЛЬКО пробелы. Табы в YAML = ошибка парсинга.
+# GlobalAutoTranslator -- фрагмент для config.yaml CLIProxyAPI
+#
+# Скопируй ВСЁ, что ниже (начиная с "payload:"), в КОНЕЦ своего config.yaml.
+# Отступы в YAML значимы: "payload:" должен стоять без отступа,
+# на том же уровне, что "port:" и "auth-dir:".
+#
+# Зачем: без этого Gemini тратит ~800 reasoning-токенов на каждый батч.
+# Для перевода коротких строк размышления не нужны совсем.
+#
+# Проверка: proxy/test-batch.bat -> в usage должно быть
+# prompt_tokens + completion_tokens == total_tokens и никакого reasoning_tokens.
 # =====================================================================
 
-# Задавливаем thinking у Gemini. Без этого модель жгёт ~800 reasoning-токенов
-# на каждый батч из четырёх строк. Параметр reasoning_effort в теле запроса
-# не работает — прокси лишь скрывает reasoning_content, а токены всё равно тратятся.
 payload:
+  # override -- всегда перезаписывает значение, даже если клиент прислал своё.
   override:
+    # Gemini через нативный протокол: бюджет размышлений в ноль.
     - models:
+        - name: "gemini-*"
+          protocol: "gemini"
         - name: "gemini-*"
           protocol: "antigravity"
       params:
-        "generationConfig.thinkingConfig.thinkingLevel": "minimal"
-  # Gemini 3.x отвергает запрос, если пришли и thinkingBudget, и thinkingLevel сразу.
+        "generationConfig.thinkingConfig.thinkingBudget": 0
+        "generationConfig.thinkingConfig.includeThoughts": false
+        "generationConfig.temperature": 0
+
+    # Тот же Gemini, но когда мод стучится через OpenAI-совместимый вход.
+    - models:
+        - name: "gemini-*"
+          protocol: "openai"
+      params:
+        "reasoning_effort": "none"
+
+  # filter -- вырезает параметры из запроса.
+  # Некоторые сборки отвергают reasoning_effort в нативном Gemini-протоколе,
+  # а мод шлёт его при включённой галке "Отправлять reasoning_effort=none".
   filter:
     - models:
         - name: "gemini-*"
+          protocol: "gemini"
+        - name: "gemini-*"
           protocol: "antigravity"
       params:
-        - "generationConfig.thinkingConfig.thinkingBudget"
-
-# --- ЕСЛИ thinkingLevel НЕ СРАБОТАЛ -----------------------------------
-# Замени блок выше на этот вариант (без filter):
-#
-# payload:
-#   override:
-#     - models:
-#         - name: "gemini-*"
-#           protocol: "antigravity"
-#       params:
-#         "generationConfig.thinkingConfig.thinkingBudget": 0
-#
-# Как проверить: в ответе на test.json смотри usage.
-#   Хорошо:  prompt_tokens + completion_tokens == total_tokens, reasoning_tokens отсутствует
-#   Плохо:   completion_tokens_details.reasoning_tokens больше 100
+        - "reasoning_effort"
+        - "thinking"

@@ -97,7 +97,8 @@ namespace GlobalAutoTranslator
 			list.Label("Статус: в кэше " + TranslationCache.Count +
 			           " | в очереди " + TranslateWorker.Pending +
 			           " | переведено за сессию " + TranslateWorker.TranslatedThisSession +
-			           " | отброшено " + TranslateWorker.Failed);
+			           " | отброшено " + TranslateWorker.Failed +
+			           (TranslateWorker.Paused ? "  [ПАУЗА: прокси недоступен]" : ""));
 
 			list.Gap(6f);
 			if (list.ButtonText("Проверить связь и качество перевода"))

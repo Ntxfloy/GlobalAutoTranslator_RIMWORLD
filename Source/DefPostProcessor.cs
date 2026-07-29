@@ -16,6 +16,7 @@ namespace GlobalAutoTranslator
 	public static class DefPostProcessor
 	{
 		private static bool alreadyRan;
+		private static readonly object walkLock = new object();
 
 		private static readonly FieldInfo labelCapField =
 			typeof(Def).GetField("cachedLabelCap", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -63,19 +64,25 @@ namespace GlobalAutoTranslator
 
 		public static void Run()
 		{
-			if (alreadyRan) return;
-			alreadyRan = true;
-			int applied, queued;
-			Walk(true, out applied, out queued);
-			GATLog.Msg("Пост-обработка Defs: применено из кэша " + applied + ", отправлено на перевод " + queued);
+			lock (walkLock)
+			{
+				if (alreadyRan) return;
+				alreadyRan = true;
+				int applied, queued;
+				Walk(true, out applied, out queued);
+				GATLog.Msg("Пост-обработка Defs: применено из кэша " + applied + ", отправлено на перевод " + queued);
+			}
 		}
 
 		/// <summary>Кнопка в настройках: только набить очередь, не меняя объекты.</summary>
 		public static int EnqueueAll()
 		{
-			int applied, queued;
-			Walk(false, out applied, out queued);
-			return queued;
+			lock (walkLock)
+			{
+				int applied, queued;
+				Walk(false, out applied, out queued);
+				return queued;
+			}
 		}
 
 		private static void Walk(bool apply, out int applied, out int queued)
@@ -142,7 +149,8 @@ namespace GlobalAutoTranslator
 			}
 		}
 
-		private static readonly Dictionary<Type, FieldInfo[]> extrasCache = new Dictionary<Type, FieldInfo[]>();
+		private static readonly ConcurrentDictionary<Type, FieldInfo[]> extrasCache =
+			new ConcurrentDictionary<Type, FieldInfo[]>();
 
 		private static FieldInfo[] ResolveExtras(Type defType)
 		{

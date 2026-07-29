@@ -98,14 +98,15 @@ namespace GlobalAutoTranslator
 				if (json[i] != '"') { at += needle.Length; continue; } // null или объект — не наш случай
 				i++;
 				int start = i;
-				var sb = new StringBuilder();
+				bool terminated = false;
 				while (i < json.Length)
 				{
 					if (json[i] == '\\') { i += 2; continue; }
-					if (json[i] == '"') break;
+					if (json[i] == '"') { terminated = true; break; }
 					i++;
 				}
-				if (i > json.Length) return null;
+				// Строка не закрыта (обрезанный ответ модели) — данных нет.
+				if (!terminated || i > json.Length) return null;
 				return Unescape(json.Substring(start, i - start));
 			}
 		}
@@ -131,6 +132,7 @@ namespace GlobalAutoTranslator
 				if (i >= body.Length) break;
 				i++;
 				string key = ReadRawString(body, ref i);
+				if (key == null) break;
 				while (i < body.Length && body[i] != ':') i++;
 				if (i >= body.Length) break;
 				i++;
@@ -138,7 +140,8 @@ namespace GlobalAutoTranslator
 				if (i >= body.Length) break;
 				i++;
 				string val = ReadRawString(body, ref i);
-				if (key != null) result[Unescape(key)] = Unescape(val ?? string.Empty);
+				if (val == null) break;
+				result[Unescape(key)] = Unescape(val);
 			}
 			return result;
 		}
@@ -146,14 +149,19 @@ namespace GlobalAutoTranslator
 		private static string ReadRawString(string s, ref int i)
 		{
 			int start = i;
+			bool terminated = false;
 			while (i < s.Length)
 			{
 				if (s[i] == '\\') { i += 2; continue; }
-				if (s[i] == '"') break;
+				if (s[i] == '"') { terminated = true; break; }
 				i++;
 			}
-			if (i > s.Length) return null;
-			string raw = s.Substring(start, Math.Min(i, s.Length) - start);
+			if (!terminated)
+			{
+				i = s.Length; // гарантируем выход из внешнего цикла ParseFlatObject
+				return null;
+			}
+			string raw = s.Substring(start, i - start);
 			i++; // пропускаем закрывающую кавычку
 			return raw;
 		}

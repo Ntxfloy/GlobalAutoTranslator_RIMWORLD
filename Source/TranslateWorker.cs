@@ -235,6 +235,11 @@ namespace GlobalAutoTranslator
 				           ", отброшено " + bad + ", в очереди " + queue.Count);
 		}
 
-		public static void ClearQuarantine() { quarantine.Clear(); }
+		public static void ClearQuarantine()
+		{
+			quarantine.Clear();
+			Interlocked.Exchange(ref consecutiveFailedBatches, 0);
+			Paused = false;
+		}
 	}
 }

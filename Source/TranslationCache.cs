@@ -17,8 +17,6 @@ namespace GlobalAutoTranslator
 	/// </summary>
 	public static class TranslationCache
 	{
-		private const int ShardCount = 64;
-
 		private static readonly ConcurrentDictionary<string, string> map =
 			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
 
@@ -162,30 +160,50 @@ namespace GlobalAutoTranslator
 			if (dirtyShards.Count == 0) return;
 			lock (ioLock)
 			{
+				// Повторная проверка под локом: пока мы ждали, другой поток мог всё сбросить.
+				if (dirtyShards.Count == 0) return;
 				try
 				{
 					Directory.CreateDirectory(CacheDir);
+
 					var shards = new List<string>(dirtyShards.Keys);
-					foreach (string shard in shards)
+					if (shards.Count == 0) return;
+
+					// Буфер на каждый грязный шард. Заполняем ОДНИМ проходом по кэшу,
+					// а не проходом на каждый шард: было O(шарды x записи), стало O(записи).
+					var buffers = new Dictionary<string, StringBuilder>(shards.Count, StringComparer.Ordinal);
+					for (int i = 0; i < shards.Count; i++)
+						buffers[shards[i]] = new StringBuilder(8192);
+
+					foreach (var kv in map)
 					{
-						var sb = new StringBuilder();
-						foreach (var kv in map)
-						{
-							if (!kv.Key.StartsWith(shard, StringComparison.Ordinal)) continue;
-							string srcText;
-							sources.TryGetValue(kv.Key, out srcText);
-							sb.Append(kv.Key).Append('\t')
-							  .Append(EscapeCell(srcText ?? "")).Append('\t')
-							  .Append(EscapeCell(kv.Value))
-							  .Append('\n');
-						}
-						string path = Path.Combine(CacheDir, shard + ".tsv");
+						if (kv.Key == null || kv.Key.Length < 2) continue;
+
+						StringBuilder sb;
+						if (!buffers.TryGetValue(kv.Key.Substring(0, 2), out sb)) continue;
+
+						string srcText;
+						sources.TryGetValue(kv.Key, out srcText);
+						sb.Append(kv.Key).Append('\t')
+						  .Append(EscapeCell(srcText ?? "")).Append('\t')
+						  .Append(EscapeCell(kv.Value))
+						  .Append('\n');
+					}
+
+					var encoding = new UTF8Encoding(false);
+					foreach (var kv in buffers)
+					{
+						string path = Path.Combine(CacheDir, kv.Key + ".tsv");
 						string tmp = path + ".tmp";
-						File.WriteAllText(tmp, sb.ToString(), new UTF8Encoding(false));
+						File.WriteAllText(tmp, kv.Value.ToString(), encoding);
 						if (File.Exists(path)) File.Delete(path);
 						File.Move(tmp, path);
+
+						// Снимаем флаг только после успешной записи именно этого шарда.
+						// Если Put прилетел во время записи — шард снова станет грязным
+						// и попадёт в следующий Flush, ничего не потеряется.
 						byte ignored;
-						dirtyShards.TryRemove(shard, out ignored);
+						dirtyShards.TryRemove(kv.Key, out ignored);
 					}
 				}
 				catch (Exception e)

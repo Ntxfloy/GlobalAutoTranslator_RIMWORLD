@@ -15,8 +15,6 @@ namespace GlobalAutoTranslator
 	/// </summary>
 	public static class LlmClient
 	{
-		private static int lastErrorLogTick;
-
 		/// <summary>
 		/// Отправляет батч на перевод. Возвращает карту id -> перевод или null при сбое.
 		/// </summary>

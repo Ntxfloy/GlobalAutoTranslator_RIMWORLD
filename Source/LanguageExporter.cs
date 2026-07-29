@@ -16,7 +16,7 @@ namespace GlobalAutoTranslator
 	/// без сети, без этого мода вообще. Самый чистый конечный результат.
 	///
 	/// Куда: <папка данных игры>/GlobalTranslator/GeneratedRussian/
-	/// Дальше папку нужно скопировать в Mods/ и включить в списке модов САМЫМ НИЗКНИМ.
+	/// Дальше папку нужно скопировать в Mods/ и включить в списке модов САМЫМ НИЖНИМ.
 	/// </summary>
 	public static class LanguageExporter
 	{
@@ -165,7 +165,7 @@ namespace GlobalAutoTranslator
 				"  <packageId>ayder.generatedrussian</packageId>\r\n" +
 				"  <name>Generated Russian (GAT)</name>\r\n" +
 				"  <author>Global Auto Translator</author>\r\n" +
-				"  <description>Автоматически сгенерированный русский перевод. Включать САМЫМ НИЗКНИМ в списке модов.</description>\r\n" +
+				"  <description>Автоматически сгенерированный русский перевод. Включать САМЫМ НИЖНИМ в списке модов, ниже всех переводимых модов.</description>\r\n" +
 				"  <supportedVersions><li>1.6</li></supportedVersions>\r\n" +
 				"</ModMetaData>\r\n";
 			File.WriteAllText(Path.Combine(aboutDir, "About.xml"), xml, new UTF8Encoding(true));
