@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 using Verse;
@@ -6,6 +8,156 @@ using RimWorld;
 
 namespace GlobalAutoTranslator
 {
+	/// <summary>
+	/// Безопасный сборщик UI-строк отрисовки (Слой 3 V2).
+	/// Выполняет быструю фильтрацию без аллокаций во время OnGUI,
+	/// а тяжелый разбор и постановку в очередь делает в Drain() главного потока.
+	/// </summary>
+	public static class UiHarvest
+	{
+		private static readonly HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+		private static readonly ConcurrentQueue<string> pending = new ConcurrentQueue<string>();
+		private static int newThisFrame;
+		private static int lastFrameCount = -1;
+
+		private static int enqueuedThisSession;
+		private static int filteredCount;
+		private static bool limitReachedLogged;
+
+		private const int MaxEnqueuedPerSession = 3000;
+		private const int MaxSeenCapacity = 20000;
+
+		public static void Note(string s)
+		{
+			if (string.IsNullOrEmpty(s)) return;
+			int len = s.Length;
+			if (len < 2 || len > 300) return;
+
+			// 1. Быстрый отбой по кириллице СРАЗУ в Note (разрывает петлю самоподачи IMGUI)
+			for (int i = 0; i < len; i++)
+			{
+				char c = s[i];
+				if (c >= '\u0400' && c <= '\u052F') return;
+			}
+
+			int currentFrame = UnityEngine.Time.frameCount;
+			if (currentFrame != lastFrameCount)
+			{
+				lastFrameCount = currentFrame;
+				newThisFrame = 0;
+			}
+
+			if (newThisFrame >= 2) return;
+			if (seen.Count >= MaxSeenCapacity) return;
+
+			lock (seen)
+			{
+				if (seen.Contains(s)) return;
+				seen.Add(s);
+			}
+
+			newThisFrame++;
+			pending.Enqueue(s);
+		}
+
+		public static void Drain(int maxPerCall = 20)
+		{
+			if (enqueuedThisSession >= MaxEnqueuedPerSession)
+			{
+				if (!limitReachedLogged)
+				{
+					limitReachedLogged = true;
+					GATLog.Warn("UI Harvest: достигнут лимит " + MaxEnqueuedPerSession + " строк за сессию. Сбор приостановлен.");
+				}
+				return;
+			}
+
+			string s;
+			int examined = 0;
+			while (examined < maxPerCall && pending.TryDequeue(out s))
+			{
+				examined++;
+
+				if (!PlaceholderGuard.ShouldTranslate(s))
+				{
+					filteredCount++;
+					continue;
+				}
+
+				// Фильтр путей, файлов и расширений
+				if (s.Contains("/") || s.Contains("\\") ||
+					s.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+					s.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
+					s.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+				{
+					filteredCount++;
+					continue;
+				}
+
+				// Проверка цифр
+				int digits = 0;
+				bool hasLetter = false;
+				for (int i = 0; i < s.Length; i++)
+				{
+					char c = s[i];
+					if (char.IsDigit(c)) digits++;
+					if (char.IsLetter(c)) hasLetter = true;
+				}
+
+				if (!hasLetter) { filteredCount++; continue; }
+				if (digits > 0 && s.Length < 25) { filteredCount++; continue; }
+				if (digits * 4 > s.Length) { filteredCount++; continue; }
+
+				// CamelCase & Hex фильтр только для однословных строк без пробелов
+				if (!s.Contains(" "))
+				{
+					if (IsCamelCaseOrCodeIdentifier(s))
+					{
+						filteredCount++;
+						continue;
+					}
+				}
+
+				TranslateWorker.Enqueue("ui", s, isVolatile: false);
+				enqueuedThisSession++;
+
+				if (enqueuedThisSession % 300 == 0)
+				{
+					GATLog.Msg("UI Harvest статус: поставлено в очередь " + enqueuedThisSession +
+					           ", в seen " + seen.Count + ", отфильтровано мусора " + filteredCount);
+				}
+			}
+		}
+
+		private static bool IsCamelCaseOrCodeIdentifier(string s)
+		{
+			if (string.IsNullOrEmpty(s)) return false;
+			if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) return true;
+			if (s.Contains("_") || s.Contains(".")) return true;
+
+			if (s.Length >= 8)
+			{
+				bool allHex = true;
+				for (int i = 0; i < s.Length; i++)
+				{
+					char c = s[i];
+					if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '-'))
+					{ allHex = false; break; }
+				}
+				if (allHex) return true;
+			}
+
+			bool hasLower = false;
+			for (int i = 0; i < s.Length; i++)
+			{
+				char c = s[i];
+				if (char.IsLower(c)) hasLower = true;
+				else if (hasLower && char.IsUpper(c)) return true;
+			}
+			return false;
+		}
+	}
+
 	/// <summary>
 	/// Вспомогательный класс для онлайн-перевода динамических объектов (Задания, Письма, Уведомления).
 	/// </summary>
@@ -157,8 +309,7 @@ namespace GlobalAutoTranslator
 
 	/// <summary>
 	/// СЛОЙ 2 — Keyed-строки. Перехватываем тот самый метод, через который игра
-	/// достаёт любой перевод по ключу. TargetMethod вместо атрибута — чтобы мод не падал,
-	/// если Ludeon поменяет сигнатуру в обновлении.
+	/// достаёт любой перевод по ключу.
 	/// </summary>
 	[HarmonyPatch]
 	public static class Patch_LoadedLanguage_TryGetTextFromKey
@@ -166,8 +317,7 @@ namespace GlobalAutoTranslator
 		public static bool Prepare()
 		{
 			bool ok = TargetMethod() != null;
-			if (!ok) GATLog.Warn("Не найден LoadedLanguage.TryGetTextFromKey — слой Keyed выключен. " +
-			                        "Открой Assembly-CSharp.dll в ILSpy и сверь имя метода.");
+			if (!ok) GATLog.Warn("Не найден LoadedLanguage.TryGetTextFromKey — слой Keyed выключен.");
 			return ok;
 		}
 
@@ -184,14 +334,10 @@ namespace GlobalAutoTranslator
 
 			string current = translated.RawText;
 
-			// Игра нашла перевод сама — не лезем.
 			if (__result && !PlaceholderGuard.ShouldTranslate(current)) return;
-
-			// Если перевода нет, RimWorld отдаёт сам ключ — такое переводить бессмысленно.
 			if (!__result || string.IsNullOrEmpty(current) || current == key) return;
 			if (!PlaceholderGuard.ShouldTranslate(current)) return;
 
-			// Запоминаем связку key -> английский текст, чтобы потом собрать Keyed-XML.
 			LanguageExporter.NoteKeyed(key, current);
 
 			string cached;
@@ -201,31 +347,177 @@ namespace GlobalAutoTranslator
 				return;
 			}
 
-			// Не блокируем кадр: ставим в очередь и показываем оригинал.
 			TranslateWorker.Enqueue("keyed", current);
 		}
 	}
 
 	/// <summary>
-	/// СЛОЙ 3 — аварийный захват того, что не прошло через слои 1-2 (хардкод в C# чужих модов).
-	///
-	/// КРИТИЧНО: Widgets.Label вызывается тысячи раз в секунду (IMGUI рисует каждый кадр,
-	/// иногда по несколько раз за кадр). Здесь РАЗРЕШЕН только поиск в памяти.
-	/// НИКАКИХ запросов, никакой записи в очередь, никаких регулярок — иначе микрофризы.
+	/// СЛОЙ 3 V2 — Перехват отрисовки текста Widgets.Label(Rect, string).
 	/// </summary>
-	[HarmonyPatch(typeof(Widgets), nameof(Widgets.Label), new Type[] { typeof(UnityEngine.Rect), typeof(string) })]
-	public static class Patch_Widgets_Label
+	[HarmonyPatch]
+	public static class Patch_Widgets_Label_RectString
 	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.Label(Rect, string) — перехват текста UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.Label), new Type[] { typeof(UnityEngine.Rect), typeof(string) });
+		}
+
 		[HarmonyPrefix]
 		public static void Prefix(ref string label)
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(label) || label.Length > 200) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(label, out cached))
 				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват отрисовки текста Widgets.Label(Rect, TaggedString).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_Label_RectTaggedString
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.Label(Rect, TaggedString) — перехват текста TaggedString UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.Label), new Type[] { typeof(UnityEngine.Rect), typeof(TaggedString) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref TaggedString label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			string raw = label.RawText;
+			if (string.IsNullOrEmpty(raw) || raw.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(raw, out cached))
+				label = new TaggedString(cached);
+			else
+				UiHarvest.Note(raw);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват отрисовки текста Widgets.LabelFit(Rect, string).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_LabelFit
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.LabelFit(Rect, string) — перехват подгоняемого текста UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.LabelFit), new Type[] { typeof(UnityEngine.Rect), typeof(string) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват текста кнопок Widgets.ButtonText (перегрузка 1).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_ButtonText
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.ButtonText (перегрузка 1) — перехват текста кнопок UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.ButtonText), new Type[] {
+				typeof(UnityEngine.Rect), typeof(string), typeof(bool), typeof(bool), typeof(bool), typeof(Nullable<UnityEngine.TextAnchor>)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват текста кнопок Widgets.ButtonText (перегрузка 2 с параметром Color).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_ButtonText_Color
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.ButtonText (перегрузка 2 с Color) — перехват цветных кнопок UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.ButtonText), new Type[] {
+				typeof(UnityEngine.Rect), typeof(string), typeof(bool), typeof(bool), typeof(UnityEngine.Color), typeof(bool), typeof(Nullable<UnityEngine.TextAnchor>)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
 		}
 	}
 
@@ -311,14 +603,14 @@ namespace GlobalAutoTranslator
 		}
 	}
 
-	/// <summary>Применяет отложенные изменения Defs и динамических объектов в главном потоке каждый кадр.</summary>
+	/// <summary>Применяет отложенные изменения Defs, UI и динамических объектов в главном потоке каждый кадр.</summary>
 	[HarmonyPatch]
 	public static class Patch_Root_Update
 	{
 		public static bool Prepare()
 		{
 			bool ok = TargetMethod() != null;
-			if (!ok) GATLog.Warn("Не найден Verse.Root.Update — сброс Defs в главном потоке выключен.");
+			if (!ok) GATLog.Warn("Не найден Verse.Root.Update — сброс Defs и UI в главном потоке выключен.");
 			return ok;
 		}
 
@@ -331,14 +623,27 @@ namespace GlobalAutoTranslator
 		public static void Postfix()
 		{
 			try { DefPostProcessor.DrainApply(); } catch { }
+			try { UiHarvest.Drain(); } catch { }
 		}
 	}
 
 	/// <summary>Периодический сброс кэша на диск во время игры.</summary>
-	[HarmonyPatch(typeof(TickManager), "DoSingleTick")]
+	[HarmonyPatch]
 	public static class Patch_TickManager_Autosave
 	{
 		private static int counter;
+
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден TickManager.DoSingleTick — автосохранение кэша выключено.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(TickManager), "DoSingleTick");
+		}
 
 		[HarmonyPostfix]
 		public static void Postfix()

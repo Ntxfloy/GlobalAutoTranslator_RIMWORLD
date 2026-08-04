@@ -110,6 +110,7 @@ $SRC = Get-ChildItem "$SRC_DIR\*.cs" | Select-Object -ExpandProperty FullName
     "/r:$MANAGED\UnityEngine.dll" `
     "/r:$MANAGED\UnityEngine.CoreModule.dll" `
     "/r:$MANAGED\UnityEngine.IMGUIModule.dll" `
+    "/r:$MANAGED\UnityEngine.TextRenderingModule.dll" `
     "/r:$MANAGED\netstandard.dll" `
     "/r:$MANAGED\System.Net.Http.dll" `
     "/r:$HARMONY" `

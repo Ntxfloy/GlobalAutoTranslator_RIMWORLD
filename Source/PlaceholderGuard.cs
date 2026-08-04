@@ -13,9 +13,9 @@ namespace GlobalAutoTranslator
 	/// </summary>
 	public static class PlaceholderGuard
 	{
-		// {PAWN_labelShort}, {0}, <color=#FF0000>, </color>, [tag], \n
+		// [[ count ]], {PAWN_labelShort}, {0}, <color=#FF0000>, </color>, [tag], \n
 		private static readonly Regex Ph = new Regex(
-			@"\{[^{}]*\}|<[^<>]+>|\[[^\[\]]+\]|\\n",
+			@"\[\[[^\]]*\]\]|\{[^{}]*\}|<[^<>]+>|\[[^\[\]]+\]|\\n",
 			RegexOptions.Compiled);
 
 		public enum ScriptKind { None, Cyrillic, Latin, Cjk, Other }
@@ -93,7 +93,16 @@ namespace GlobalAutoTranslator
 		{
 			var list = new List<string>();
 			if (string.IsNullOrEmpty(s)) return list;
-			foreach (Match m in Ph.Matches(s)) list.Add(m.Value);
+			foreach (Match m in Ph.Matches(s))
+			{
+				string val = m.Value;
+				if (val.StartsWith("{") && val.EndsWith("}") && val.Contains("?"))
+				{
+					int q = val.IndexOf('?');
+					val = val.Substring(0, q + 1); // "{PREDATOR_gender ?"
+				}
+				list.Add(val);
+			}
 			list.Sort(StringComparer.Ordinal);
 			return list;
 		}

@@ -22,7 +22,7 @@ namespace GlobalAutoTranslator
 		// Слои
 		public bool translateDefs = true;      // L1
 		public bool translateKeyed = true;     // L2
-		public bool translateWidgets = false;  // L3 — только read-only поиск в кэше
+		public bool translateWidgets = true;   // L3 — перехват интерфейса на лету
 		public bool translateDescriptions = true;
 
 		public bool verboseLogging = true;
@@ -40,7 +40,7 @@ namespace GlobalAutoTranslator
 			Scribe_Values.Look(ref requestJsonObject, "requestJsonObject", true);
 			Scribe_Values.Look(ref translateDefs, "translateDefs", true);
 			Scribe_Values.Look(ref translateKeyed, "translateKeyed", true);
-			Scribe_Values.Look(ref translateWidgets, "translateWidgets", false);
+			Scribe_Values.Look(ref translateWidgets, "translateWidgets", true);
 			Scribe_Values.Look(ref translateDescriptions, "translateDescriptions", true);
 			Scribe_Values.Look(ref verboseLogging, "verboseLogging", true);
 		}
@@ -50,7 +50,6 @@ namespace GlobalAutoTranslator
 	{
 		public static GATSettings Settings;
 		private static string selfTestResult = "";
-		private Vector2 scroll;
 
 		public GATMod(ModContentPack content) : base(content)
 		{
@@ -92,7 +91,7 @@ namespace GlobalAutoTranslator
 			list.CheckboxLabeled("Переводить Defs (названия предметов, зданий, существ)", ref Settings.translateDefs);
 			list.CheckboxLabeled("Переводить описания (дорого по токенам)", ref Settings.translateDescriptions);
 			list.CheckboxLabeled("Переводить Keyed-строки (текст интерфейса)", ref Settings.translateKeyed);
-			list.CheckboxLabeled("Слой 3: подмена в Widgets.Label (только из кэша, без запросов)", ref Settings.translateWidgets);
+			list.CheckboxLabeled("Слой 3: перехват интерфейса на лету (UI / кнопки / диалоги; может дать просадку кадров)", ref Settings.translateWidgets);
 			list.CheckboxLabeled("Подробный лог", ref Settings.verboseLogging);
 			list.CheckboxLabeled("Отправлять reasoning_effort=none", ref Settings.sendReasoningEffortNone);
 			list.CheckboxLabeled("Требовать response_format=json_object", ref Settings.requestJsonObject);

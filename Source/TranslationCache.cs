@@ -77,7 +77,10 @@ namespace GlobalAutoTranslator
 			if (source != null)
 			{
 				sources[key] = source;
-				flat[source] = translated;
+				if (context == "ui" || context == "title")
+					flat[source] = translated;
+				else
+					flat.TryAdd(source, translated);
 			}
 			dirtyShards[ShardOf(key)] = 1;
 		}

@@ -139,6 +139,7 @@ namespace GlobalAutoTranslator
 				{ "6", "{PAWN_labelShort}被{0}击倒了。" },
 				{ "7", "ムファロの毛皮のパーカ" },
 				{ "8", "Stahllangschwert" },
+				{ "9", "{PREDATOR} {PREDATOR_gender ? attacked : attacked} {PREY_labelShort}" },
 			};
 			var res = TranslateBatch(s, "label", probe);
 			if (res == null) return "ОШИБКА: нет ответа. Смотри лог игры (Ctrl+F12 — окно ошибок).";
