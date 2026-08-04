@@ -13,8 +13,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (Get-Process RimWorldWin64 -ErrorAction SilentlyContinue) {
-    throw "RimWorld is running. Close the game before building."
+if (!$NoInstall -and (Get-Process RimWorldWin64 -ErrorAction SilentlyContinue)) {
+    throw "RimWorld is running. Close the game before deploying to Mods."
 }
 
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path

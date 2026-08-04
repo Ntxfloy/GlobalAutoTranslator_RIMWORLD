@@ -67,7 +67,81 @@ namespace GlobalAutoTranslator
 
 		public static bool TryGetFlat(string source, out string translated)
 		{
-			return flat.TryGetValue(source, out translated);
+			if (string.IsNullOrEmpty(source))
+			{
+				translated = null;
+				return false;
+			}
+
+			if (flat.TryGetValue(source, out translated)) return true;
+
+			// 1. Двоеточие и пробелы на конце ("Label:" -> "Метка:")
+			if (source.EndsWith(":"))
+			{
+				string trimmed = source.Substring(0, source.Length - 1).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + ":";
+					return true;
+				}
+			}
+
+			if (source.EndsWith(": "))
+			{
+				string trimmed = source.Substring(0, source.Length - 2).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + ": ";
+					return true;
+				}
+			}
+
+			// 2. Вопросительный знак на конце ("Enable?" -> "Включить?")
+			if (source.EndsWith("?"))
+			{
+				string trimmed = source.Substring(0, source.Length - 1).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + "?";
+					return true;
+				}
+			}
+
+			// 3. Многоточие на конце ("Loading..." -> "Загрузка...")
+			if (source.EndsWith("..."))
+			{
+				string trimmed = source.Substring(0, source.Length - 3).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + "...";
+					return true;
+				}
+			}
+
+			// 4. Круглые скобки вокруг ("(Default)" -> "(По умолчанию)")
+			if (source.StartsWith("(") && source.EndsWith(")") && source.Length > 2)
+			{
+				string trimmed = source.Substring(1, source.Length - 2).Trim();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = "(" + translated + ")";
+					return true;
+				}
+			}
+
+			// 5. Квадратные скобки вокруг ("[MOD]" -> "[МОД]")
+			if (source.StartsWith("[") && source.EndsWith("]") && source.Length > 2)
+			{
+				string trimmed = source.Substring(1, source.Length - 2).Trim();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = "[" + translated + "]";
+					return true;
+				}
+			}
+
+			translated = null;
+			return false;
 		}
 
 		public static void Put(string context, string source, string translated)

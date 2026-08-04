@@ -24,8 +24,8 @@ namespace GlobalAutoTranslator
 		private static int filteredCount;
 		private static bool limitReachedLogged;
 
-		private const int MaxEnqueuedPerSession = 3000;
-		private const int MaxSeenCapacity = 20000;
+		private const int MaxEnqueuedPerSession = 100000;
+		private const int MaxSeenCapacity = 100000;
 
 		public static void Note(string s)
 		{
@@ -47,7 +47,7 @@ namespace GlobalAutoTranslator
 				newThisFrame = 0;
 			}
 
-			if (newThisFrame >= 2) return;
+			if (newThisFrame >= 4) return;
 			if (seen.Count >= MaxSeenCapacity) return;
 
 			lock (seen)
@@ -58,9 +58,26 @@ namespace GlobalAutoTranslator
 
 			newThisFrame++;
 			pending.Enqueue(s);
+
+			// Подстраховка: если строка с двоеточием ("Label:"), ставим в очередь и очищенную версию ("Label")
+			if (s.EndsWith(":"))
+			{
+				string trimmed = s.Substring(0, s.Length - 1).TrimEnd();
+				if (trimmed.Length >= 2)
+				{
+					lock (seen)
+					{
+						if (!seen.Contains(trimmed))
+						{
+							seen.Add(trimmed);
+							pending.Enqueue(trimmed);
+						}
+					}
+				}
+			}
 		}
 
-		public static void Drain(int maxPerCall = 20)
+		public static void Drain(int maxPerCall = 30)
 		{
 			if (enqueuedThisSession >= MaxEnqueuedPerSession)
 			{
@@ -105,8 +122,8 @@ namespace GlobalAutoTranslator
 				}
 
 				if (!hasLetter) { filteredCount++; continue; }
-				if (digits > 0 && s.Length < 25) { filteredCount++; continue; }
-				if (digits * 4 > s.Length) { filteredCount++; continue; }
+				if (digits > 0 && s.Length < 25 && !s.EndsWith("%")) { filteredCount++; continue; }
+				if (digits * 4 > s.Length && !s.EndsWith("%")) { filteredCount++; continue; }
 
 				// CamelCase & Hex фильтр только для однословных строк без пробелов
 				if (!s.Contains(" "))
@@ -651,6 +668,108 @@ namespace GlobalAutoTranslator
 			if (++counter < 7200) return; // ~2 игровых часа
 			counter = 0;
 			try { TranslationCache.Flush(); } catch { }
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват всплывающих подсказок TooltipHandler.TipRegion(Rect, string).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_TooltipHandler_TipRegion_String
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден TooltipHandler.TipRegion(Rect, string) — перехват подсказок выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(TooltipHandler), nameof(TooltipHandler.TipRegion), new Type[] { typeof(UnityEngine.Rect), typeof(string) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string text)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(text) || text.Length > 600) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(text, out cached))
+				text = cached;
+			else
+				UiHarvest.Note(text);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват всплывающих подсказок TooltipHandler.TipRegion(Rect, TaggedString).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_TooltipHandler_TipRegion_TaggedString
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден TooltipHandler.TipRegion(Rect, TaggedString) — перехват TaggedString подсказок выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(TooltipHandler), nameof(TooltipHandler.TipRegion), new Type[] { typeof(UnityEngine.Rect), typeof(TaggedString) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref TaggedString text)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			string raw = text.RawText;
+			if (string.IsNullOrEmpty(raw) || raw.Length > 600) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(raw, out cached))
+				text = new TaggedString(cached);
+			else
+				UiHarvest.Note(raw);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват подписей чекбоксов Widgets.CheckboxLabeled.
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_CheckboxLabeled
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.CheckboxLabeled — перехват чекбоксов выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.CheckboxLabeled), new Type[] {
+				typeof(UnityEngine.Rect), typeof(string), typeof(bool), typeof(bool), typeof(UnityEngine.Texture2D), typeof(UnityEngine.Texture2D), typeof(bool)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
 		}
 	}
 }
