@@ -15,6 +15,7 @@ for %%D in (
   "%~dp0..\CLIPROXY"
   "%~dp0..\..\CLIPROXY"
   "D:\Ayder_dontdelete\CLIPROXY"
+  "C:\Users\Ayder\Desktop\Ayder_dontdelete\CLIPROXY"
 ) do if not defined PROXYDIR if exist "%%~fD\cli-proxy-api.exe" set "PROXYDIR=%%~fD"
 
 if not defined PROXYDIR set "PROXYDIR=%~dp0."

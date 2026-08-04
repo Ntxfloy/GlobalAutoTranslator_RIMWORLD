@@ -9,7 +9,7 @@ namespace GlobalAutoTranslator
 	{
 		// Подключение
 		public string endpoint = "http://127.0.0.1:8317/v1/chat/completions";
-		public string model = "gemini-3.5-flash-extra-low";
+		public string model = "gemini-3.6-flash-high";
 		public string apiKey = "";
 		public int timeoutSeconds = 120;
 
@@ -31,7 +31,7 @@ namespace GlobalAutoTranslator
 		{
 			base.ExposeData();
 			Scribe_Values.Look(ref endpoint, "endpoint", "http://127.0.0.1:8317/v1/chat/completions");
-			Scribe_Values.Look(ref model, "model", "gemini-3.5-flash-extra-low");
+			Scribe_Values.Look(ref model, "model", "gemini-3.6-flash-high");
 			Scribe_Values.Look(ref apiKey, "apiKey", "");
 			Scribe_Values.Look(ref timeoutSeconds, "timeoutSeconds", 120);
 			Scribe_Values.Look(ref batchSize, "batchSize", 40);

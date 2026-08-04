@@ -62,6 +62,8 @@ if (-not $HarmonyDll) {
     $candidates = @(
         (Join-Path $workshop "2009463077\Current\Assemblies\0Harmony.dll"),   # Harmony
         (Join-Path $workshop "2009463077\1.6\Assemblies\0Harmony.dll"),
+        (Join-Path $workshop "2009463077\1.5\Assemblies\0Harmony.dll"),
+        (Join-Path $workshop "2009463077\1.4\Assemblies\0Harmony.dll"),
         (Join-Path $RimWorldRoot "Mods\Harmony\Current\Assemblies\0Harmony.dll"),
         (Join-Path $workshop "839005762\1.6\Assemblies\0Harmony.dll")         # HugsLib fallback
     )

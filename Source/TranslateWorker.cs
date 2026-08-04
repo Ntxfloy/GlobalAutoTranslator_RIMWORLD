@@ -13,6 +13,7 @@ namespace GlobalAutoTranslator
 		public string Key;
 		public Action<string> OnDone; // ОСТОРОЖНО: вызывается из рабочего потока, не трогать Unity API
 		public int NetworkRetries;      // сколько раз уже повторяли из-за сетевой ошибки
+		public bool Volatile;           // если true — переводить, но не сохранять в постоянный кэш на диск
 	}
 
 	/// <summary>
@@ -120,7 +121,7 @@ namespace GlobalAutoTranslator
 		}
 
 		/// <summary>Ставит строку в очередь, если её ещё нет в кэше и не в работе.</summary>
-		public static void Enqueue(string context, string source, Action<string> onDone = null)
+		public static void Enqueue(string context, string source, Action<string> onDone = null, bool isVolatile = false)
 		{
 			if (!PlaceholderGuard.ShouldTranslate(source)) return;
 
@@ -142,6 +143,7 @@ namespace GlobalAutoTranslator
 				Source = source,
 				Key = key,
 				OnDone = onDone,
+				Volatile = isVolatile,
 			});
 		}
 
@@ -279,7 +281,8 @@ namespace GlobalAutoTranslator
 				// при context=label она опускает регистр, и "Core" превратилось бы в "core".
 				if (!string.IsNullOrEmpty(dst) && string.Equals(dst.Trim(), job.Source.Trim(), StringComparison.OrdinalIgnoreCase))
 				{
-					TranslationCache.Put(job.Context, job.Source, job.Source);
+					if (!job.Volatile)
+						TranslationCache.Put(job.Context, job.Source, job.Source);
 					untouched++;
 					continue;
 				}
@@ -294,7 +297,8 @@ namespace GlobalAutoTranslator
 					continue;
 				}
 
-				TranslationCache.Put(job.Context, job.Source, dst);
+				if (!job.Volatile)
+					TranslationCache.Put(job.Context, job.Source, dst);
 				Interlocked.Increment(ref TranslatedThisSession);
 				ok++;
 				if (job.OnDone != null)
