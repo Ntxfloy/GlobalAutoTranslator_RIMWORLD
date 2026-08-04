@@ -5,6 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 using Verse;
 using RimWorld;
+using RimWorld.Planet;
 
 namespace GlobalAutoTranslator
 {
@@ -770,6 +771,118 @@ namespace GlobalAutoTranslator
 				label = cached;
 			else
 				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват контекстного меню ПКМ (FloatMenuOption).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_FloatMenuOption_Construct
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден FloatMenuOption(string, Action) — перехват меню ПКМ выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Constructor(typeof(FloatMenuOption), new Type[] {
+				typeof(string), typeof(Action), typeof(MenuOptionPriority), typeof(Action<UnityEngine.Rect>), typeof(Thing), typeof(float), typeof(Func<UnityEngine.Rect, bool>), typeof(WorldObject), typeof(bool), typeof(int)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват всплывающих уведомлений вверху слева (Messages.Message).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Messages_Message_String
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Messages.Message(string, MessageTypeDef, bool) — перехват уведомлений выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Messages), nameof(Messages.Message), new Type[] {
+				typeof(string), typeof(MessageTypeDef), typeof(bool)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string text)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(text) || text.Length > 500) return;
+
+			string cached;
+			if (TranslationCache.TryGet("description", text, out cached))
+			{
+				text = cached;
+			}
+			else if (TranslationCache.TryGetFlat(text, out cached))
+			{
+				text = cached;
+			}
+			else
+			{
+				string orig = text;
+				TranslateWorker.Enqueue("description", orig, isVolatile: true);
+			}
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват текстов диалогов с NPC (DiaNode).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_DiaNode_Construct
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден DiaNode(string) — перехват диалогов NPC выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Constructor(typeof(DiaNode), new Type[] { typeof(string) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string text)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(text) || text.Length > 1000) return;
+
+			string cached;
+			if (TranslationCache.TryGet("description", text, out cached))
+				text = cached;
+			else
+				TranslateWorker.Enqueue("description", text, isVolatile: true);
 		}
 	}
 }
