@@ -11,11 +11,31 @@ namespace GlobalAutoTranslator
 	/// </summary>
 	public static class DynamicTranslator
 	{
-		private static readonly AccessTools.FieldRef<Letter, TaggedString> letterLabelRef =
-			AccessTools.FieldRefAccess<Letter, TaggedString>("label");
+		private static readonly AccessTools.FieldRef<Letter, TaggedString> letterLabelRef;
+		private static readonly AccessTools.FieldRef<ChoiceLetter, TaggedString> choiceLetterTextRef;
 
-		private static readonly AccessTools.FieldRef<ChoiceLetter, TaggedString> choiceLetterTextRef =
-			AccessTools.FieldRefAccess<ChoiceLetter, TaggedString>("text");
+		static DynamicTranslator()
+		{
+			try
+			{
+				letterLabelRef = AccessTools.FieldRefAccess<Letter, TaggedString>("label");
+			}
+			catch (Exception e)
+			{
+				letterLabelRef = null;
+				GATLog.Warn("Не удалось инициализировать FieldRef для Letter.label: " + e.Message);
+			}
+
+			try
+			{
+				choiceLetterTextRef = AccessTools.FieldRefAccess<ChoiceLetter, TaggedString>("text");
+			}
+			catch (Exception e)
+			{
+				choiceLetterTextRef = null;
+				GATLog.Warn("Не удалось инициализировать FieldRef для ChoiceLetter.text: " + e.Message);
+			}
+		}
 
 		public static void TranslateQuest(Quest quest)
 		{

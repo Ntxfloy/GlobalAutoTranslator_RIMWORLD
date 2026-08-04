@@ -10,3 +10,11 @@ Thumbs.db
 bin/
 obj/
 *.tmp
+
+# Sensitive, proxy, and temporary files
+config.yaml
+*.token
+.cli-proxy-api/
+roslyn/
+cache/
+*.log

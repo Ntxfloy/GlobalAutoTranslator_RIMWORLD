@@ -90,6 +90,7 @@ namespace GlobalAutoTranslator
 			running = false;                       // volatile — потоки увидят на следующей итерации Loop
 			Interlocked.Increment(ref generation); // осиротевшие потоки не оживут, даже если Start() вернёт running = true
 			JoinThreads(2000);                     // общий бюджет ожидания, не на каждый поток
+			inFlight.Clear();                      // очищаем невыполненные ключи, чтобы они не блокировали переповтор
 			TranslationCache.Flush();
 			GATLog.Msg("Пул потоков перевода остановлен.");
 		}
