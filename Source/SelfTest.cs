@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text;
 using Verse;
 
@@ -76,6 +77,46 @@ namespace GlobalAutoTranslator
 			// 12. грамматические правила отклоняются
 			bool ok12 = !PlaceholderGuard.ShouldTranslate("tradeAdj_fem->luxurious");
 			sb.AppendLine((ok12 ? "[OK]" : "[FAIL]") + " 12. Grammar rule rejected -> " + (ok12 ? "отклонено" : "пропущено"));
+
+			// 13. Валидация и маскировка маркеров (3 честные проверки)
+			{
+				string maskSrc = "{PAWN_labelShort} was downed by {0}. [PAWN_pronoun] screamed.";
+				Dictionary<int, string> maskMap;
+				string masked = PlaceholderGuard.MaskPlaceholders(maskSrc, out maskMap); // ⟦1⟧ was downed by ⟦2⟧. ⟦3⟧ screamed.
+
+				// Проверка 13a: корректный ответ модели проходит круг
+				string validModelReply = "⟦1⟧ повержен(а) ⟦2⟧. ⟦3⟧ закричал(а).";
+				string r1;
+				bool ok13a = PlaceholderGuard.ValidateMarkers(validModelReply, maskMap, out r1);
+				string unmasked13a = PlaceholderGuard.UnmaskPlaceholders(validModelReply, maskMap);
+				bool pass13a = ok13a && unmasked13a.Contains("{PAWN_labelShort}") && unmasked13a.Contains("{0}") && unmasked13a.Contains("[PAWN_pronoun]");
+
+				// Проверка 13b: ответ с выброшенным маркером ⟦2⟧ отклоняется
+				string missingModelReply = "⟦1⟧ повержен(а). ⟦3⟧ закричал(а).";
+				string r2;
+				bool ok13b = !PlaceholderGuard.ValidateMarkers(missingModelReply, maskMap, out r2);
+
+				// Проверка 13c: ответ с придуманным маркером ⟦4⟧ отклоняется по Validate (нераспознанные маркеры)
+				string extraModelReply = "⟦1⟧ повержен(а) ⟦2⟧. ⟦3⟧ закричал(а) ⟦4⟧.";
+				string r3;
+				PlaceholderGuard.ValidateMarkers(extraModelReply, maskMap, out r3);
+				string unmasked13c = PlaceholderGuard.UnmaskPlaceholders(extraModelReply, maskMap);
+				string valReason;
+				bool ok13c = !PlaceholderGuard.Validate(maskSrc, unmasked13c, out valReason) && valReason.Contains("нераспознанные маркеры");
+
+				bool ok13 = pass13a && ok13b && ok13c;
+				sb.AppendLine((ok13 ? "[OK]" : "[FAIL]") + " 13. Marker validation (full round-trip, missing rejected, extra rejected)");
+			}
+
+			// 14. Неприкосновенность гендерных тернарников в MaskPlaceholders
+			{
+				string ternarySrc = "{PREDATOR} {PREDATOR_gender ? attacked : attacked} {PREY_labelShort}";
+				Dictionary<int, string> map14;
+				string masked14 = PlaceholderGuard.MaskPlaceholders(ternarySrc, out map14);
+				bool hasTernary = masked14.Contains("{PREDATOR_gender ? attacked : attacked}");
+				bool ok14 = map14.Count == 2 && hasTernary; // {PREDATOR} → ⟦1⟧, {PREY_labelShort} → ⟦2⟧, тернарник не замаскирован
+				sb.AppendLine((ok14 ? "[OK]" : "[FAIL]") + " 14. Gender ternary preserved in MaskPlaceholders -> " + (hasTernary ? "сохранён" : "испорчен"));
+			}
 
 			GATLog.Msg(sb.ToString());
 		}

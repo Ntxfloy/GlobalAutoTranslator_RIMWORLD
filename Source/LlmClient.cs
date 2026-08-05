@@ -19,11 +19,23 @@ namespace GlobalAutoTranslator
 		/// Отправляет батч на перевод. Возвращает карту id -> перевод или null при сбое.
 		/// </summary>
 		public static Dictionary<string, string> TranslateBatch(
-			GATSettings s, string context, Dictionary<string, string> items)
+			GATSettings s, string context, Dictionary<string, string> items, bool isRetry = false)
 		{
 			if (items == null || items.Count == 0) return new Dictionary<string, string>();
 
-			string body = BuildRequestBody(s, context, items);
+			// Маскируем плейсхолдеры: {PAWN_labelShort} → ⟦1⟧, [PAWN_pronoun] → ⟦2⟧ и т.д.
+			var maskedItems = new Dictionary<string, string>(items.Count, StringComparer.Ordinal);
+			var markerMaps  = new Dictionary<string, Dictionary<int, string>>(items.Count, StringComparer.Ordinal);
+			foreach (var kv in items)
+			{
+				Dictionary<int, string> map;
+				maskedItems[kv.Key] = PlaceholderGuard.MaskPlaceholders(kv.Value, out map);
+				if (map.Count > 0) markerMaps[kv.Key] = map;
+			}
+
+			float temperature = isRetry ? 0.3f : 0f;
+			var requiredMarkers = isRetry ? markerMaps : null;
+			string body = BuildRequestBody(s, context, maskedItems, temperature, requiredMarkers);
 
 			for (int attempt = 1; attempt <= 3; attempt++)
 			{
@@ -51,7 +63,20 @@ namespace GlobalAutoTranslator
 					var normalized = new Dictionary<string, string>(parsed.Count, StringComparer.Ordinal);
 					foreach (var kv in parsed)
 					{
-						normalized[kv.Key] = PlaceholderGuard.NormalizeFullwidth(kv.Value);
+						string val = PlaceholderGuard.NormalizeFullwidth(kv.Value);
+						// Диагностический лог: валидация маркеров ПЕРЕД обратной подстановкой
+						Dictionary<int, string> map;
+						if (markerMaps.TryGetValue(kv.Key, out map) && map.Count > 0)
+						{
+							string markerReason;
+							if (!PlaceholderGuard.ValidateMarkers(val, map, out markerReason))
+							{
+								if (s.verboseLogging)
+									GATLog.Warn("ValidateMarkers fail (" + markerReason + ") key=" + kv.Key);
+							}
+							val = PlaceholderGuard.UnmaskPlaceholders(val, map);
+						}
+						normalized[kv.Key] = val;
 					}
 					return normalized;
 				}
@@ -87,19 +112,21 @@ namespace GlobalAutoTranslator
 			return null;
 		}
 
-		private static string BuildRequestBody(GATSettings s, string context, Dictionary<string, string> items)
+		private static string BuildRequestBody(
+			GATSettings s, string context, Dictionary<string, string> items,
+			float temperature = 0f, Dictionary<string, Dictionary<int, string>> requiredMarkers = null)
 		{
 			var sb = new StringBuilder(2048);
 			sb.Append('{');
 			sb.Append("\"model\":\"").Append(MiniJson.Escape(s.model)).Append("\",");
-			sb.Append("\"temperature\":0,");
+			sb.Append("\"temperature\":").Append(temperature.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append(",");
 			sb.Append("\"stream\":false,");
 			if (s.sendReasoningEffortNone) sb.Append("\"reasoning_effort\":\"none\",");
 			if (s.requestJsonObject) sb.Append("\"response_format\":{\"type\":\"json_object\"},");
 			sb.Append("\"messages\":[");
 			sb.Append("{\"role\":\"system\",\"content\":\"").Append(MiniJson.Escape(Prompt.System)).Append("\"},");
 			sb.Append("{\"role\":\"user\",\"content\":\"")
-			  .Append(MiniJson.Escape(Prompt.BuildUserMessage(context, items)))
+			  .Append(MiniJson.Escape(Prompt.BuildUserMessage(context, items, requiredMarkers)))
 			  .Append("\"}");
 			sb.Append("]}");
 			return sb.ToString();
@@ -143,6 +170,8 @@ namespace GlobalAutoTranslator
 			};
 			var res = TranslateBatch(s, "label", probe);
 			if (res == null) return "ОШИБКА: нет ответа. Смотри лог игры (Ctrl+F12 — окно ошибок).";
+
+			TranslateWorker.ClearQuarantine(); // Если связь появилась, снимаем воркер с паузы
 
 			var sb = new StringBuilder();
 			foreach (var kv in probe)

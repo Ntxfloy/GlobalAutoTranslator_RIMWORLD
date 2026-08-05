@@ -52,9 +52,125 @@ namespace GlobalAutoTranslator
 		private static readonly ConcurrentDictionary<string, byte> dirtyShards =
 			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
 
+		private static readonly ConcurrentDictionary<string, byte> permanentFailed =
+			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+		private static bool permanentFailedLimitLogged;
+		private const int MaxPermanentFailed = 20000;
+
 		private static readonly object ioLock = new object();
 
 		public static int Count { get { return map.Count; } }
+		public static int PermanentFailedCount { get { return permanentFailed.Count; } }
+
+		private static string ExpectedFailedHeader
+		{
+			get
+			{
+				string modelName = GATMod.Settings != null ? GATMod.Settings.model : "default";
+				return "# v" + Prompt.PromptVersion + "\t" + modelName;
+			}
+		}
+
+		public static bool IsPermanentFailed(string key)
+		{
+			return permanentFailed.ContainsKey(key);
+		}
+
+		public static void AddPermanentFailed(string key, string source)
+		{
+			if (string.IsNullOrEmpty(key)) return;
+			if (permanentFailed.Count >= MaxPermanentFailed)
+			{
+				if (!permanentFailedLimitLogged)
+				{
+					permanentFailedLimitLogged = true;
+					GATLog.Warn("Достигнут лимит " + MaxPermanentFailed + " записей в failed.tsv. Запись приостановлена.");
+				}
+				return;
+			}
+
+			// Защита от дубликатов
+			if (!permanentFailed.TryAdd(key, 1)) return;
+
+			try
+			{
+				lock (ioLock)
+				{
+					string path = Path.Combine(RootDir, "failed.tsv");
+					if (!File.Exists(path))
+					{
+						File.WriteAllText(path, ExpectedFailedHeader + "\n", Encoding.UTF8);
+					}
+					File.AppendAllText(path, key + "\t" + EscapeCell(source ?? "") + "\n", Encoding.UTF8);
+				}
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Не удалось записать в failed.tsv: " + e.Message);
+			}
+		}
+
+		public static void ClearPermanentFailed()
+		{
+			permanentFailed.Clear();
+			permanentFailedLimitLogged = false;
+			try
+			{
+				lock (ioLock)
+				{
+					string path = Path.Combine(RootDir, "failed.tsv");
+					if (File.Exists(path)) File.Delete(path);
+				}
+				GATLog.Msg("Список окончательных отбраковок (failed.tsv) успешно очищен.");
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Не удалось удалить failed.tsv: " + e.Message);
+			}
+		}
+
+		private static void LoadPermanentFailed()
+		{
+			try
+			{
+				string path = Path.Combine(RootDir, "failed.tsv");
+				if (!File.Exists(path)) return;
+
+				string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+				if (lines.Length == 0) return;
+
+				// Проверка заголовка версии промпта и модели
+				string expectedHeader = ExpectedFailedHeader;
+				if (!lines[0].StartsWith("# v") || !string.Equals(lines[0].Trim(), expectedHeader, StringComparison.Ordinal))
+				{
+					GATLog.Warn("Версия промпта или модели изменилась (в файле: " + lines[0] + ", ожидалось: " + expectedHeader + "). Файл failed.tsv сброшен.");
+					ClearPermanentFailed();
+					return;
+				}
+
+				int loaded = 0;
+				for (int i = 1; i < lines.Length; i++)
+				{
+					string line = lines[i];
+					if (string.IsNullOrWhiteSpace(line)) continue;
+					string[] parts = line.Split('\t');
+					if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]))
+					{
+						if (permanentFailed.Count < MaxPermanentFailed)
+						{
+							permanentFailed[parts[0]] = 1;
+							loaded++;
+						}
+					}
+				}
+				if (loaded > 0)
+					GATLog.Msg("Загружен список окончательных отбраковок: " + loaded + " строк из failed.tsv");
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Ошибка чтения failed.tsv: " + e.Message);
+			}
+		}
 
 		public static string RootDir
 		{
@@ -411,6 +527,7 @@ namespace GlobalAutoTranslator
 			try
 			{
 				Directory.CreateDirectory(CacheDir);
+				LoadPermanentFailed();
 				int loaded = 0, legacy = 0;
 				foreach (string file in Directory.GetFiles(CacheDir, "*.tsv"))
 				{

@@ -14,6 +14,7 @@ namespace GlobalAutoTranslator
 		public Action<string> OnDone; // ОСТОРОЖНО: вызывается из рабочего потока, не трогать Unity API
 		public int NetworkRetries;      // сколько раз уже повторяли из-за сетевой ошибки
 		public bool Volatile;           // если true — переводить, но не сохранять в постоянный кэш на диск
+		public bool PlaceholderRetried; // true — это уже повторная попытка после отбраковки по плейсхолдерам
 	}
 
 	/// <summary>
@@ -127,7 +128,7 @@ namespace GlobalAutoTranslator
 			if (!PlaceholderGuard.ShouldTranslate(source)) return;
 
 			string key = TranslationCache.Key(context, source);
-			if (quarantine.ContainsKey(key)) return;
+			if (quarantine.ContainsKey(key) || TranslationCache.IsPermanentFailed(key)) return;
 
 			string cached;
 			if (TranslationCache.TryGetByKey(key, out cached))
@@ -199,7 +200,7 @@ namespace GlobalAutoTranslator
 			return running && Volatile.Read(ref generation) == myGen;
 		}
 
-		/// <summary>Набирает батч с одинаковым context.</summary>
+		/// <summary>Набирает батч с одинаковым context и одинаковым статусом повтора.</summary>
 		private static List<TranslateJob> DrainBatch()
 		{
 			TranslateJob first;
@@ -213,7 +214,7 @@ namespace GlobalAutoTranslator
 			{
 				TranslateJob j;
 				if (!queue.TryDequeue(out j)) break;
-				if (j.Context == first.Context) batch.Add(j);
+				if (j.Context == first.Context && j.PlaceholderRetried == first.PlaceholderRetried) batch.Add(j);
 				else postpone.Add(j);
 				if (postpone.Count > size) break;
 			}
@@ -228,7 +229,8 @@ namespace GlobalAutoTranslator
 			for (int i = 0; i < batch.Count; i++)
 				items[i.ToString()] = batch[i].Source;
 
-			var result = LlmClient.TranslateBatch(s, batch[0].Context, items);
+			bool isRetry = batch[0].PlaceholderRetried;
+			var result = LlmClient.TranslateBatch(s, batch[0].Context, items, isRetry);
 
 			if (result == null)
 			{
@@ -280,7 +282,7 @@ namespace GlobalAutoTranslator
 				if (!result.TryGetValue(i.ToString(), out dst))
 				{
 					bad++;
-					quarantine[job.Key] = 1;
+					quarantine[job.Key] = 1; // Только временный карантин в памяти, в failed.tsv не пишем
 					continue;
 				}
 
@@ -298,10 +300,32 @@ namespace GlobalAutoTranslator
 				string reason;
 				if (!PlaceholderGuard.Validate(job.Source, dst, out reason))
 				{
+					string srcPreview = job.Source.Length > 200 ? job.Source.Substring(0, 200) + "..." : job.Source;
+					if (s.verboseLogging)
+						GATLog.Warn("PlaceholderGuard fail (" + reason + ")\n  SRC: " + srcPreview + "\n  DST: " + dst);
+
+					// Одна повторная попытка для отказов по плейсхолдерам/маркерам (не для сетевых)
+					if (!job.PlaceholderRetried && reason != null && (reason.Contains("плейсхолдер") || reason.Contains("маркер")))
+					{
+						job.PlaceholderRetried = true;
+						byte ign;
+						inFlight.TryRemove(job.Key, out ign);
+						inFlight.TryAdd(job.Key, 1);
+						queue.Enqueue(job);
+						if (s.verboseLogging)
+							GATLog.Msg("Повторная попытка (маркеры/плейсхолдеры, temp=0.3): " + srcPreview);
+						continue;
+					}
+
 					bad++;
 					quarantine[job.Key] = 1;
-					if (s.verboseLogging)
-						GATLog.Warn("PlaceholderGuard fail (" + reason + ")\n  SRC: " + job.Source + "\n  DST: " + dst);
+					// Пожизненная блокировка ТОЛЬКО при повторном отказе по маркерам/плейсхолдерам
+					if (job.PlaceholderRetried && reason != null && (reason.Contains("плейсхолдер") || reason.Contains("маркер")))
+					{
+						TranslationCache.AddPermanentFailed(job.Key, job.Source);
+						if (s.verboseLogging)
+							GATLog.Warn("Окончательный отказ по маркерам/плейсхолдерам (записано в failed.tsv): " + srcPreview);
+					}
 					continue;
 				}
 
@@ -316,7 +340,7 @@ namespace GlobalAutoTranslator
 			}
 
 			if (s.verboseLogging)
-				GATLog.Msg("Батч [" + batch[0].Context + "]: принято " + ok + ", без перевода " + untouched +
+				GATLog.Msg("Батч [" + batch[0].Context + "]" + (isRetry ? " (RETRY)" : "") + ": принято " + ok + ", без перевода " + untouched +
 				           ", отброшено " + bad + ", в очереди " + queue.Count);
 		}
 

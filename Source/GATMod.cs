@@ -111,6 +111,12 @@ namespace GlobalAutoTranslator
 				t.IsBackground = true;
 				t.Start();
 			}
+			if (list.ButtonText("Запустить самотест"))
+			{
+				SelfTest.Run();
+				GATLog.Msg("Самотест выполнен вручную из настроек мода.");
+				Messages.Message("Самотест выполнен. Результаты в логе (Ctrl+F12)", MessageTypeDefOf.TaskCompletion, false);
+			}
 			if (list.ButtonText("Перевести все Defs сейчас (поставить в очередь)"))
 			{
 				int n = DefPostProcessor.EnqueueAll();
@@ -125,6 +131,11 @@ namespace GlobalAutoTranslator
 			{
 				TranslateWorker.ClearQuarantine();
 				Messages.Message("Карантин очищен", MessageTypeDefOf.TaskCompletion, false);
+			}
+			if (list.ButtonText("Очистить список окончательных отбраковок (" + TranslationCache.PermanentFailedCount + ")"))
+			{
+				TranslationCache.ClearPermanentFailed();
+				Messages.Message("Список окончательных отбраковок очищен", MessageTypeDefOf.TaskCompletion, false);
 			}
 			if (list.ButtonText("Сохранить кэш на диск"))
 			{

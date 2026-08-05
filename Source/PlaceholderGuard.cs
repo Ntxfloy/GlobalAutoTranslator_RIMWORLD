@@ -169,6 +169,7 @@ namespace GlobalAutoTranslator
 
 			if (dst.Contains("```")) { reason = "markdown в ответе"; return false; }
 			if (dst.StartsWith("Перевод:", StringComparison.Ordinal)) { reason = "префикс-болтовня"; return false; }
+			if (dst.Contains(MarkerLeft) || dst.Contains(MarkerRight)) { reason = "в ответе остались нераспознанные маркеры"; return false; }
 
 			int dCyr, dLat, dCjk, dOther;
 			CountScripts(dst, out dCyr, out dLat, out dCjk, out dOther);
@@ -228,6 +229,137 @@ namespace GlobalAutoTranslator
 			int n = 0, at = 0;
 			while ((at = s.IndexOf(sub, at, StringComparison.OrdinalIgnoreCase)) >= 0) { n++; at += sub.Length; }
 			return n;
+		}
+
+		// ────────────────────────────────────────────────────────────────
+		//  Числовые маркеры ⟦N⟧  (U+27E6 / U+27E7)
+		//  Каждое вхождение плейсхолдера (включая повторы) получает свой номер.
+		// ────────────────────────────────────────────────────────────────
+
+		public const string MarkerLeft  = "\u27E6";
+		public const string MarkerRight = "\u27E7";
+
+		/// <summary>
+		/// Заменяет каждый плейсхолдер в строке на ⟦1⟧, ⟦2⟧, … нумеруя каждое
+		/// вхождение отдельно (включая повторы одного плейсхолдера).
+		/// ИСКЛЮЧЕНИЕ: Гендерные конструкции {X_gender ? a : b} НЕ маскируются —
+		/// они отправляются в модель в открытом виде для перевода вариантов внутри (Правило 3).
+		/// Возвращает замаскированную строку и словарь номер→оригинальный плейсхолдер.
+		/// Если плейсхолдеров нет, map будет пустым, а строка — без изменений.
+		/// </summary>
+		public static string MaskPlaceholders(string src, out Dictionary<int, string> map)
+		{
+			map = new Dictionary<int, string>();
+			if (string.IsNullOrEmpty(src)) return src;
+
+			var matches = Ph.Matches(src);
+			if (matches.Count == 0) return src;
+
+			var sb = new StringBuilder(src.Length);
+			int idx = 1;
+			int prev = 0;
+			foreach (Match m in matches)
+			{
+				string val = m.Value;
+				// Гендерные конструкции вида {PAWN_gender ? attacked : attacked} НЕ маскируем
+				if (val.StartsWith("{") && val.EndsWith("}") && val.Contains("?"))
+				{
+					sb.Append(src, prev, m.Index + m.Length - prev);
+					prev = m.Index + m.Length;
+					continue;
+				}
+
+				sb.Append(src, prev, m.Index - prev);
+				sb.Append(MarkerLeft).Append(idx).Append(MarkerRight);
+				map[idx] = val;
+				idx++;
+				prev = m.Index + m.Length;
+			}
+			sb.Append(src, prev, src.Length - prev);
+			return sb.ToString();
+		}
+
+		/// <summary>
+		/// Подставляет обратно оригинальные плейсхолдеры по номерам маркеров.
+		/// Порядок в переводе может отличаться от исходника — подставляет строго по номеру.
+		/// </summary>
+		public static string UnmaskPlaceholders(string translated, Dictionary<int, string> map)
+		{
+			if (string.IsNullOrEmpty(translated) || map == null || map.Count == 0) return translated;
+
+			var sb = new StringBuilder(translated.Length + 64);
+			int i = 0;
+			while (i < translated.Length)
+			{
+				int start = translated.IndexOf(MarkerLeft, i, StringComparison.Ordinal);
+				if (start < 0) { sb.Append(translated, i, translated.Length - i); break; }
+
+				sb.Append(translated, i, start - i);
+				int end = translated.IndexOf(MarkerRight, start + MarkerLeft.Length, StringComparison.Ordinal);
+				if (end < 0) { sb.Append(translated, start, translated.Length - start); break; }
+
+				string numStr = translated.Substring(start + MarkerLeft.Length, end - start - MarkerLeft.Length);
+				int num;
+				string orig;
+				if (int.TryParse(numStr, out num) && map.TryGetValue(num, out orig))
+					sb.Append(orig);
+				else
+					sb.Append(translated, start, end + MarkerRight.Length - start); // неизвестный маркер — оставляем как есть
+
+				i = end + MarkerRight.Length;
+			}
+			return sb.ToString();
+		}
+
+		/// <summary>
+		/// Проверяет, что набор маркеров ⟦N⟧ в ответе совпадает с ожидаемым.
+		/// </summary>
+		public static bool ValidateMarkers(string masked, Dictionary<int, string> map, out string reason)
+		{
+			reason = null;
+			if (map == null || map.Count == 0) return true;
+
+			var found = new HashSet<int>();
+			int i = 0;
+			while (i < masked.Length)
+			{
+				int start = masked.IndexOf(MarkerLeft, i, StringComparison.Ordinal);
+				if (start < 0) break;
+				int end = masked.IndexOf(MarkerRight, start + MarkerLeft.Length, StringComparison.Ordinal);
+				if (end < 0) break;
+				string numStr = masked.Substring(start + MarkerLeft.Length, end - start - MarkerLeft.Length);
+				int num;
+				if (int.TryParse(numStr, out num)) found.Add(num);
+				i = end + MarkerRight.Length;
+			}
+
+			var missing = new List<int>();
+			var extra   = new List<int>();
+			foreach (int key in map.Keys)
+				if (!found.Contains(key)) missing.Add(key);
+			foreach (int key in found)
+				if (!map.ContainsKey(key)) extra.Add(key);
+
+			if (missing.Count == 0 && extra.Count == 0) return true;
+
+			var sb = new StringBuilder("маркеры не совпадают:");
+			if (missing.Count > 0) { sb.Append(" утеряны "); missing.Sort(); foreach (int m in missing) sb.Append(MarkerLeft).Append(m).Append(MarkerRight).Append(' '); }
+			if (extra.Count > 0)   { sb.Append(" лишние ");  extra.Sort();   foreach (int e in extra)   sb.Append(MarkerLeft).Append(e).Append(MarkerRight).Append(' '); }
+			reason = sb.ToString();
+			return false;
+		}
+
+		/// <summary>
+		/// Строит корректирующую строку для повторной попытки:
+		/// перечисляет обязательные маркеры, которые модель должна сохранить.
+		/// </summary>
+		public static string BuildRetryHint(Dictionary<int, string> map)
+		{
+			if (map == null || map.Count == 0) return "";
+			var sb = new StringBuilder("ОБЯЗАТЕЛЬНЫЕ маркеры (перенеси все в перевод без изменений): ");
+			foreach (var kv in map)
+				sb.Append(MarkerLeft).Append(kv.Key).Append(MarkerRight).Append(' ');
+			return sb.ToString().TrimEnd();
 		}
 	}
 }

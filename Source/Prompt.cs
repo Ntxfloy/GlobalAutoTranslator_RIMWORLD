@@ -11,17 +11,18 @@ namespace GlobalAutoTranslator
 	/// </summary>
 	public static class Prompt
 	{
+		public const string PromptVersion = "25.0";
+
 		public const string System =
 			"Ты переводчик игровой локализации RimWorld на русский язык.\n" +
 			"0. Исходный язык ЛЮБОЙ: английский, китайский, японский, корейский, немецкий, " +
 			"французский, испанский или любой другой. Определяй язык каждой строки сам. " +
 			"Строки в одном запросе могут быть на разных языках. Результат ВСЕГДА на русском.\n" +
 			"1. Переводи только значения, ключи не меняй.\n" +
-			"2. Плейсхолдеры {PAWN_labelShort}, {0} и теги <color=#FF0000>, \\n копируй символ в символ.\n" +
-			"3. ЗАПРЕЩЕНО создавать НОВЫЕ гендерные конструкции вида {X_gender ? a : b}. Но если такая конструкция УЖЕ ЕСТЬ в исходнике, ОБЯЗАТЕЛЬНО СОХРАНИ её формат и переведи оба варианта внутри (напал : напала), не выбрасывая её. НЕВЕРНО: [PAWN_pronoun] -> {PAWN_gender ? он : она}. ВЕРНО: [PAWN_pronoun] -> [PAWN_pronoun]. Число и порядок конструкций в ответе обязаны совпадать с исходником. Не добавляй ни одной новой.\n" +
+			"2. Пронумерованные маркеры ⟦1⟧, ⟦2⟧, ⟦3⟧ и теги <color=#FF0000>, \\n — это подстановки движка. Перенеси ВСЕ маркеры в перевод, ровно по одному разу каждый. Не переводи и не изменяй их. Порядок маркеров в переводе может отличаться от исходника.\n" +
+			"3. ЗАПРЕЩЕНО создавать НОВЫЕ гендерные конструкции вида {X_gender ? a : b}. Но если такая конструкция УЖЕ ЕСТЬ в исходнике, ОБЯЗАТЕЛЬНО СОХРАНИ её формат и переведи оба варианта внутри (напал : напала), не выбрасывая её. Число и порядок конструкций в ответе обязаны совпадать с исходником. Не добавляй ни одной новой.\n" +
 			"4. Род неизвестен: пиши окончание в скобках — повержен(а), готов(а).\n" +
-			"5. Если после плейсхолдера нужен падеж, ставь двоеточие: " +
-			"{PAWN} has been downed by {0} -> {PAWN} повержен(а). Причина: {0}\n" +
+			"5. Если после маркера или подстановки нужен падеж, ставь двоеточие: ⟦1⟧ has been downed by ⟦2⟧ -> ⟦1⟧ повержен(а). Причина: ⟦2⟧\n" +
 			"6. НЕ размышляй, НЕ перебирай варианты, НЕ объясняй. Сразу результат.\n" +
 			"7. Стиль: сухой игровой интерфейс, без канцелярита и без отсебятины.\n" +
 			"8. Для context=label все значения пиши СО СТРОЧНОЙ буквы (игра сама капитализирует). " +
@@ -36,7 +37,7 @@ namespace GlobalAutoTranslator
 			"Транслитерация допустима только для имён собственных, названий фракций и вымышленных названий.\n" +
 			"13. Пунктуация только русская и только ASCII-символами: круглые скобки ( ), кавычки, запятые, точки. " +
 			"НИКОГДА не используй полноширинные знаки （） ｛｝ ， 。 「」 — движок игры их не понимает.\n" +
-			"14. Текст в квадратных скобках — [Conflagrator], [PAWN_pronoun], [[ count ]] — это подстановки движка. Копируй их символ в символ вместе со скобками и пробелами внутри. НИКОГДА не переводи и не изменяй содержимое квадратных скобок.\n";
+			"14. Если маркер или плейсхолдер встречается в исходнике несколько раз, в переводе он должен встретиться ровно столько же раз. НЕВЕРНО: «⟦1⟧ attacked ⟦2⟧ and ⟦1⟧» → «⟦1⟧ напал на ⟦2⟧». ВЕРНО: «⟦1⟧ attacked ⟦2⟧ and ⟦1⟧» → «⟦1⟧ напал на ⟦2⟧ и ⟦1⟧».\n";
 
 		/// <summary>Глоссарий каноничных терминов RimWorld. Можно расширять.</summary>
 		public static readonly Dictionary<string, string> Glossary = new Dictionary<string, string>
@@ -72,10 +73,29 @@ namespace GlobalAutoTranslator
 		};
 
 		/// <summary>Собирает user-сообщение: {"context":..,"glossary":{..},"items":{..}}</summary>
-		public static string BuildUserMessage(string context, Dictionary<string, string> items)
+		public static string BuildUserMessage(
+			string context, Dictionary<string, string> items,
+			Dictionary<string, Dictionary<int, string>> requiredMarkers = null)
 		{
 			var sb = new StringBuilder(512);
 			sb.Append("{\"context\":\"").Append(MiniJson.Escape(context)).Append("\",");
+
+			if (requiredMarkers != null && requiredMarkers.Count > 0)
+			{
+				sb.Append("\"required\":{");
+				bool firstR = true;
+				foreach (var kv in requiredMarkers)
+				{
+					if (kv.Value == null || kv.Value.Count == 0) continue;
+					if (!firstR) sb.Append(',');
+					firstR = false;
+					var mList = new StringBuilder();
+					foreach (int num in kv.Value.Keys)
+						mList.Append(PlaceholderGuard.MarkerLeft).Append(num).Append(PlaceholderGuard.MarkerRight).Append(' ');
+					sb.Append('"').Append(MiniJson.Escape(kv.Key)).Append("\":\"").Append(MiniJson.Escape(mList.ToString().TrimEnd())).Append('"');
+				}
+				sb.Append("},");
+			}
 
 			// В глоссарий кладём только термины, реально встретившиеся в батче —
 			// иначе на каждый запрос жжём сотни лишних prompt-токенов.

@@ -403,11 +403,31 @@ namespace GlobalAutoTranslator
 			string cached;
 			if (TranslationCache.TryGet("keyed", current, out cached) && !string.IsNullOrWhiteSpace(cached))
 			{
+				// Страховка: если оригинал содержал ->, а перевод потерял/изменил число стрелок — вернуть оригинал
+				if (current.Contains("->"))
+				{
+					int srcArrows = CountArrows(current);
+					int dstArrows = CountArrows(cached);
+					if (srcArrows != dstArrows)
+					{
+						GATLog.Warn("Грамматика (->): оригинал содержит " + srcArrows + " стрелок, перевод " + dstArrows +
+						            ". Возвращаю оригинал.\n  key=" + key + "\n  orig=" + current + "\n  dst=" + cached);
+						return; // не подставляем перевод
+					}
+				}
+
 				translated = new TaggedString(cached);
 				return;
 			}
 
 			TranslateWorker.Enqueue("keyed", current);
+		}
+
+		private static int CountArrows(string s)
+		{
+			int n = 0, at = 0;
+			while ((at = s.IndexOf("->", at, StringComparison.Ordinal)) >= 0) { n++; at += 2; }
+			return n;
 		}
 	}
 
