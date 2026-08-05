@@ -136,6 +136,13 @@ namespace GlobalAutoTranslator
 				return;
 			}
 
+			if (context != "ui" && TranslationCache.TryGetTemplated(source, out cached))
+			{
+				TranslationCache.Put(context, source, cached);
+				if (onDone != null) onDone(cached);
+				return;
+			}
+
 			if (!inFlight.TryAdd(key, 1)) return; // уже в очереди — дедупликация
 
 			queue.Enqueue(new TranslateJob

@@ -175,7 +175,7 @@ namespace GlobalAutoTranslator
 			if (!PlaceholderGuard.ShouldTranslate(src)) return;
 
 			string cached;
-			if (TranslationCache.TryGet(context, src, out cached))
+			if (TranslationCache.TryGet(context, src, out cached) && !string.IsNullOrWhiteSpace(cached))
 			{
 				if (apply) { setter(cached); applied++; }
 				return;

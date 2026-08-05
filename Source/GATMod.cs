@@ -14,7 +14,7 @@ namespace GlobalAutoTranslator
 		public int timeoutSeconds = 120;
 
 		// Поведение
-		public int batchSize = 40;
+		public int batchSize = 25;
 		public int maxConcurrent = 2;
 		public bool sendReasoningEffortNone = true;
 		public bool requestJsonObject = true;

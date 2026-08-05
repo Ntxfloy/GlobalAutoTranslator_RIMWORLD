@@ -14,7 +14,7 @@ namespace GlobalAutoTranslator
 	public static class PlaceholderGuard
 	{
 		// [[ count ]], {PAWN_labelShort}, {0}, <color=#FF0000>, </color>, [tag], \n
-		private static readonly Regex Ph = new Regex(
+		public static readonly Regex Ph = new Regex(
 			@"\[\[[^\]]*\]\]|\{[^{}]*\}|<[^<>]+>|\[[^\[\]]+\]|\\n",
 			RegexOptions.Compiled);
 
@@ -112,6 +112,7 @@ namespace GlobalAutoTranslator
 		{
 			if (string.IsNullOrEmpty(src)) return false;
 			if (src.Length > 4000) return false;                 // аномалия, не текст интерфейса
+			if (src.Contains("->")) return false;                // синтаксис правил грамматики RimWorld
 
 			int cyr, lat, cjk, other;
 			CountScripts(src, out cyr, out lat, out cjk, out other);
@@ -135,7 +136,17 @@ namespace GlobalAutoTranslator
 		{
 			reason = null;
 
-			if (string.IsNullOrEmpty(dst)) { reason = "пусто"; return false; }
+			if (string.IsNullOrWhiteSpace(dst)) { reason = "пусто"; return false; }
+
+			int srcArrowCount = CountOccurrences(src, "->");
+			if (srcArrowCount > 0)
+			{
+				if (CountOccurrences(dst, "->") != srcArrowCount)
+				{
+					reason = "утерян или изменен синтаксис грамматики (->)";
+					return false;
+				}
+			}
 
 			var a = Placeholders(src);
 			var b = Placeholders(dst);

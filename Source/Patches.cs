@@ -32,7 +32,7 @@ namespace GlobalAutoTranslator
 		{
 			if (string.IsNullOrEmpty(s)) return;
 			int len = s.Length;
-			if (len < 2 || len > 300) return;
+			if (len < 2 || len > 600) return;
 
 			// 1. Быстрый отбой по кириллице СРАЗУ в Note (разрывает петлю самоподачи IMGUI)
 			for (int i = 0; i < len; i++)
@@ -54,13 +54,44 @@ namespace GlobalAutoTranslator
 			lock (seen)
 			{
 				if (seen.Contains(s)) return;
-				seen.Add(s);
 			}
 
-			newThisFrame++;
-			pending.Enqueue(s);
+			// Если у строки есть числовой/юнитовый хвост после двоеточия ("Global Animation Speed: 100%"), в очередь кладём только голову ("Global Animation Speed")
+			int colonIdx = s.LastIndexOf(':');
+			if (colonIdx > 0 && colonIdx < s.Length - 1)
+			{
+				string tail = s.Substring(colonIdx + 1);
+				bool isTailNumeric = true;
+				for (int i = 0; i < tail.Length; i++)
+				{
+					char c = tail[i];
+					if (!char.IsDigit(c) && c != ' ' && c != '%' && c != '.' && c != ',' && c != '-' && c != '+' && c != '/' && c != 'x' && c != '×')
+					{
+						isTailNumeric = false;
+						break;
+					}
+				}
+				if (isTailNumeric)
+				{
+					string head = s.Substring(0, colonIdx).TrimEnd();
+					if (head.Length >= 2)
+					{
+						lock (seen)
+						{
+							seen.Add(s);
+							if (!seen.Contains(head))
+							{
+								seen.Add(head);
+								pending.Enqueue(head);
+								newThisFrame++;
+							}
+						}
+						return;
+					}
+				}
+			}
 
-			// Подстраховка: если строка с двоеточием ("Label:"), ставим в очередь и очищенную версию ("Label")
+			// Если строка с двоеточием ("Label:"), ставим в очередь только очищенную версию ("Label"), а оригинальную добавляем в seen
 			if (s.EndsWith(":"))
 			{
 				string trimmed = s.Substring(0, s.Length - 1).TrimEnd();
@@ -68,14 +99,25 @@ namespace GlobalAutoTranslator
 				{
 					lock (seen)
 					{
+						seen.Add(s);
 						if (!seen.Contains(trimmed))
 						{
 							seen.Add(trimmed);
 							pending.Enqueue(trimmed);
+							newThisFrame++;
 						}
 					}
+					return;
 				}
 			}
+
+			lock (seen)
+			{
+				seen.Add(s);
+			}
+
+			newThisFrame++;
+			pending.Enqueue(s);
 		}
 
 		public static void Drain(int maxPerCall = 30)
@@ -123,8 +165,8 @@ namespace GlobalAutoTranslator
 				}
 
 				if (!hasLetter) { filteredCount++; continue; }
-				if (digits > 0 && s.Length < 25 && !s.EndsWith("%")) { filteredCount++; continue; }
-				if (digits * 4 > s.Length && !s.EndsWith("%")) { filteredCount++; continue; }
+				if (digits > 0 && s.Length < 25) { filteredCount++; continue; }
+				if (digits * 4 > s.Length) { filteredCount++; continue; }
 
 				// CamelCase & Hex фильтр только для однословных строк без пробелов
 				if (!s.Contains(" "))
@@ -359,7 +401,7 @@ namespace GlobalAutoTranslator
 			LanguageExporter.NoteKeyed(key, current);
 
 			string cached;
-			if (TranslationCache.TryGet("keyed", current, out cached))
+			if (TranslationCache.TryGet("keyed", current, out cached) && !string.IsNullOrWhiteSpace(cached))
 			{
 				translated = new TaggedString(cached);
 				return;
@@ -674,68 +716,75 @@ namespace GlobalAutoTranslator
 
 	/// <summary>
 	/// СЛОЙ 3 V2 — Перехват всплывающих подсказок TooltipHandler.TipRegion(Rect, string).
+	/// <summary>
+	/// Перехват открытия писем (ChoiceLetter.OpenLetter).
+	/// Перед построением окна диалога перечитывает кэш и шаблонный индекс для text и title.
 	/// </summary>
 	[HarmonyPatch]
-	public static class Patch_TooltipHandler_TipRegion_String
+	public static class Patch_ChoiceLetter_OpenLetter
 	{
 		public static bool Prepare()
 		{
 			bool ok = TargetMethod() != null;
-			if (!ok) GATLog.Warn("Не найден TooltipHandler.TipRegion(Rect, string) — перехват подсказок выключен.");
+			if (!ok) GATLog.Warn("Не найден ChoiceLetter.OpenLetter — обновление писем перед открытием выключено.");
 			return ok;
 		}
 
 		public static MethodBase TargetMethod()
 		{
-			return AccessTools.Method(typeof(TooltipHandler), nameof(TooltipHandler.TipRegion), new Type[] { typeof(UnityEngine.Rect), typeof(string) });
+			return AccessTools.Method(typeof(ChoiceLetter), "OpenLetter");
 		}
 
 		[HarmonyPrefix]
-		public static void Prefix(ref string text)
+		public static void Prefix(Letter __instance)
 		{
-			var s = GATMod.Settings;
-			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(text) || text.Length > 600) return;
-
-			string cached;
-			if (TranslationCache.TryGetFlat(text, out cached))
-				text = cached;
-			else
-				UiHarvest.Note(text);
+			var cl = __instance as ChoiceLetter;
+			if (cl == null) return;
+			try
+			{
+				DynamicTranslator.TranslateLetter(cl);
+			}
+			catch { }
 		}
 	}
 
 	/// <summary>
-	/// СЛОЙ 3 V2 — Перехват всплывающих подсказок TooltipHandler.TipRegion(Rect, TaggedString).
+	/// СЛОЙ 3 V2 — Перехват всплывающих подсказок TooltipHandler.TipRegion.
 	/// </summary>
 	[HarmonyPatch]
-	public static class Patch_TooltipHandler_TipRegion_TaggedString
+	public static class Patch_TooltipHandler_TipRegion
 	{
 		public static bool Prepare()
 		{
 			bool ok = TargetMethod() != null;
-			if (!ok) GATLog.Warn("Не найден TooltipHandler.TipRegion(Rect, TaggedString) — перехват TaggedString подсказок выключен.");
+			if (!ok) GATLog.Warn("Не найден TooltipHandler.TipRegion(Rect, TipSignal) — перехват подсказок выключен.");
 			return ok;
 		}
 
 		public static MethodBase TargetMethod()
 		{
-			return AccessTools.Method(typeof(TooltipHandler), nameof(TooltipHandler.TipRegion), new Type[] { typeof(UnityEngine.Rect), typeof(TaggedString) });
+			foreach (var m in typeof(TooltipHandler).GetMethods(BindingFlags.Public | BindingFlags.Static))
+			{
+				if (m.Name != "TipRegion") continue;
+				var ps = m.GetParameters();
+				if (ps.Length >= 2 && ps[0].ParameterType == typeof(UnityEngine.Rect) && ps[1].ParameterType == typeof(TipSignal)) return m;
+			}
+			return null;
 		}
 
 		[HarmonyPrefix]
-		public static void Prefix(ref TaggedString text)
+		public static void Prefix(ref TipSignal tip)
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			string raw = text.RawText;
-			if (string.IsNullOrEmpty(raw) || raw.Length > 600) return;
+			if (tip.textGetter != null && string.IsNullOrEmpty(tip.text)) return;
+			if (string.IsNullOrEmpty(tip.text) || tip.text.Length > 600) return;
 
 			string cached;
-			if (TranslationCache.TryGetFlat(raw, out cached))
-				text = new TaggedString(cached);
+			if (TranslationCache.TryGetFlat(tip.text, out cached))
+				tip.text = cached;
 			else
-				UiHarvest.Note(raw);
+				UiHarvest.Note(tip.text);
 		}
 	}
 
@@ -754,9 +803,13 @@ namespace GlobalAutoTranslator
 
 		public static MethodBase TargetMethod()
 		{
-			return AccessTools.Method(typeof(Widgets), nameof(Widgets.CheckboxLabeled), new Type[] {
-				typeof(UnityEngine.Rect), typeof(string), typeof(bool), typeof(bool), typeof(UnityEngine.Texture2D), typeof(UnityEngine.Texture2D), typeof(bool)
-			});
+			foreach (var m in typeof(Widgets).GetMethods(BindingFlags.Public | BindingFlags.Static))
+			{
+				if (m.Name != "CheckboxLabeled") continue;
+				var ps = m.GetParameters();
+				if (ps.Length >= 2 && ps[0].ParameterType == typeof(UnityEngine.Rect) && ps[1].ParameterType == typeof(string)) return m;
+			}
+			return null;
 		}
 
 		[HarmonyPrefix]
@@ -764,7 +817,7 @@ namespace GlobalAutoTranslator
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 600) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(label, out cached))
@@ -783,15 +836,18 @@ namespace GlobalAutoTranslator
 		public static bool Prepare()
 		{
 			bool ok = TargetMethod() != null;
-			if (!ok) GATLog.Warn("Не найден FloatMenuOption(string, Action) — перехват меню ПКМ выключен.");
+			if (!ok) GATLog.Warn("Не найден FloatMenuOption — перехват меню ПКМ выключен.");
 			return ok;
 		}
 
 		public static MethodBase TargetMethod()
 		{
-			return AccessTools.Constructor(typeof(FloatMenuOption), new Type[] {
-				typeof(string), typeof(Action), typeof(MenuOptionPriority), typeof(Action<UnityEngine.Rect>), typeof(Thing), typeof(float), typeof(Func<UnityEngine.Rect, bool>), typeof(WorldObject), typeof(bool), typeof(int)
-			});
+			foreach (var ctor in typeof(FloatMenuOption).GetConstructors(BindingFlags.Public | BindingFlags.Instance))
+			{
+				var ps = ctor.GetParameters();
+				if (ps.Length >= 1 && ps[0].ParameterType == typeof(string)) return ctor;
+			}
+			return null;
 		}
 
 		[HarmonyPrefix]
@@ -799,7 +855,7 @@ namespace GlobalAutoTranslator
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 600) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(label, out cached))
@@ -818,15 +874,19 @@ namespace GlobalAutoTranslator
 		public static bool Prepare()
 		{
 			bool ok = TargetMethod() != null;
-			if (!ok) GATLog.Warn("Не найден Messages.Message(string, MessageTypeDef, bool) — перехват уведомлений выключен.");
+			if (!ok) GATLog.Warn("Не найден Messages.Message — перехват уведомлений выключен.");
 			return ok;
 		}
 
 		public static MethodBase TargetMethod()
 		{
-			return AccessTools.Method(typeof(Messages), nameof(Messages.Message), new Type[] {
-				typeof(string), typeof(MessageTypeDef), typeof(bool)
-			});
+			foreach (var m in typeof(Messages).GetMethods(BindingFlags.Public | BindingFlags.Static))
+			{
+				if (m.Name != "Message") continue;
+				var ps = m.GetParameters();
+				if (ps.Length >= 1 && ps[0].ParameterType == typeof(string)) return m;
+			}
+			return null;
 		}
 
 		[HarmonyPrefix]
@@ -834,10 +894,14 @@ namespace GlobalAutoTranslator
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(text) || text.Length > 500) return;
+			if (string.IsNullOrEmpty(text) || text.Length > 600) return;
 
 			string cached;
 			if (TranslationCache.TryGet("description", text, out cached))
+			{
+				text = cached;
+			}
+			else if (TranslationCache.TryGetTemplated(text, out cached))
 			{
 				text = cached;
 			}
@@ -847,42 +911,50 @@ namespace GlobalAutoTranslator
 			}
 			else
 			{
-				string orig = text;
-				TranslateWorker.Enqueue("description", orig, isVolatile: true);
+				TranslateWorker.Enqueue("description", text, isVolatile: false);
 			}
 		}
 	}
 
+
 	/// <summary>
-	/// СЛОЙ 3 V2 — Перехват текстов диалогов с NPC (DiaNode).
+	/// СЛОЙ 3 V2 — Перехват текстов диалогов с NPC (DiaNode TaggedString).
 	/// </summary>
 	[HarmonyPatch]
-	public static class Patch_DiaNode_Construct
+	public static class Patch_DiaNode_Construct_TaggedString
 	{
 		public static bool Prepare()
 		{
 			bool ok = TargetMethod() != null;
-			if (!ok) GATLog.Warn("Не найден DiaNode(string) — перехват диалогов NPC выключен.");
+			if (!ok) GATLog.Warn("Не найден DiaNode(TaggedString) — перехват TaggedString диалогов NPC выключен.");
 			return ok;
 		}
 
 		public static MethodBase TargetMethod()
 		{
-			return AccessTools.Constructor(typeof(DiaNode), new Type[] { typeof(string) });
+			foreach (var ctor in typeof(DiaNode).GetConstructors(BindingFlags.Public | BindingFlags.Instance))
+			{
+				var ps = ctor.GetParameters();
+				if (ps.Length == 1 && ps[0].ParameterType == typeof(TaggedString)) return ctor;
+			}
+			return null;
 		}
 
 		[HarmonyPrefix]
-		public static void Prefix(ref string text)
+		public static void Prefix(ref TaggedString text)
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(text) || text.Length > 1000) return;
+			string raw = text.RawText;
+			if (string.IsNullOrEmpty(raw) || raw.Length > 1000) return;
 
 			string cached;
-			if (TranslationCache.TryGet("description", text, out cached))
-				text = cached;
+			if (TranslationCache.TryGet("description", raw, out cached))
+				text = new TaggedString(cached);
+			else if (TranslationCache.TryGetTemplated(raw, out cached))
+				text = new TaggedString(cached);
 			else
-				TranslateWorker.Enqueue("description", text, isVolatile: true);
+				TranslateWorker.Enqueue("description", raw, isVolatile: false);
 		}
 	}
 }

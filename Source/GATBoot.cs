@@ -49,6 +49,11 @@ namespace GlobalAutoTranslator
 			}
 
 			GATLog.Msg("Запущен. Кэш: " + TranslationCache.RootDir);
+			
+			if (GATMod.Settings.verboseLogging)
+			{
+				SelfTest.Run();
+			}
 		}
 	}
 

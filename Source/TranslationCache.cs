@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Linq;
 using Verse;
 
 namespace GlobalAutoTranslator
@@ -28,6 +30,24 @@ namespace GlobalAutoTranslator
 		/// Без MD5 и без контекста: в Widgets.Label нельзя тратить ни одной аллокации.</summary>
 		private static readonly ConcurrentDictionary<string, string> flat =
 			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+
+		private static readonly ConcurrentDictionary<string, byte> flatNoFallback =
+			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+
+		public class TemplateRecord
+		{
+			public Regex Pattern;
+			public string TargetTemplate;
+			public int MinLength;
+			public string Anchor;
+		}
+
+		private static readonly ConcurrentBag<TemplateRecord> templates = new ConcurrentBag<TemplateRecord>();
+		private static readonly ConcurrentDictionary<string, byte> templateKeys = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+		private static readonly ConcurrentDictionary<string, int> templateNoMatch = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+		private static int templateCount;
+		private static bool templateKeysLimitLogged;
+		private static bool templateCountLimitLogged;
 
 		private static readonly ConcurrentDictionary<string, byte> dirtyShards =
 			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
@@ -74,6 +94,11 @@ namespace GlobalAutoTranslator
 			}
 
 			if (flat.TryGetValue(source, out translated)) return true;
+			if (flatNoFallback.ContainsKey(source))
+			{
+				translated = null;
+				return false;
+			}
 
 			// 1. Двоеточие и пробелы на конце ("Label:" -> "Метка:")
 			if (source.EndsWith(":"))
@@ -81,7 +106,8 @@ namespace GlobalAutoTranslator
 				string trimmed = source.Substring(0, source.Length - 1).TrimEnd();
 				if (flat.TryGetValue(trimmed, out translated))
 				{
-					translated = translated + ":";
+					translated = translated + source.Substring(trimmed.Length);
+					flat[source] = translated;
 					return true;
 				}
 			}
@@ -91,57 +117,247 @@ namespace GlobalAutoTranslator
 				string trimmed = source.Substring(0, source.Length - 2).TrimEnd();
 				if (flat.TryGetValue(trimmed, out translated))
 				{
-					translated = translated + ": ";
+					translated = translated + source.Substring(trimmed.Length);
+					flat[source] = translated;
 					return true;
 				}
 			}
 
-			// 2. Вопросительный знак на конце ("Enable?" -> "Включить?")
+			// 2. Числовой/юнитовый хвост после двоеточия ("Global Animation Speed: 100%" -> head "Global Animation Speed", tail ": 100%")
+			int colonIdx = source.LastIndexOf(':');
+			if (colonIdx > 0 && colonIdx < source.Length - 1)
+			{
+				string tail = source.Substring(colonIdx + 1);
+				bool isTailNumeric = true;
+				for (int i = 0; i < tail.Length; i++)
+				{
+					char c = tail[i];
+					if (!char.IsDigit(c) && c != ' ' && c != '%' && c != '.' && c != ',' && c != '-' && c != '+' && c != '/' && c != 'x' && c != '×')
+					{
+						isTailNumeric = false;
+						break;
+					}
+				}
+				if (isTailNumeric)
+				{
+					string head = source.Substring(0, colonIdx).TrimEnd();
+					if (flat.TryGetValue(head, out string headTrans))
+					{
+						translated = headTrans + source.Substring(head.Length);
+						flat[source] = translated;
+						return true;
+					}
+				}
+			}
+
+			// 3. Вопросительный знак на конце ("Enable?" -> "Включить?")
 			if (source.EndsWith("?"))
 			{
 				string trimmed = source.Substring(0, source.Length - 1).TrimEnd();
 				if (flat.TryGetValue(trimmed, out translated))
 				{
 					translated = translated + "?";
+					flat[source] = translated;
 					return true;
 				}
 			}
 
-			// 3. Многоточие на конце ("Loading..." -> "Загрузка...")
+			// 4. Многоточие на конце ("Loading..." -> "Загрузка...")
 			if (source.EndsWith("..."))
 			{
 				string trimmed = source.Substring(0, source.Length - 3).TrimEnd();
 				if (flat.TryGetValue(trimmed, out translated))
 				{
 					translated = translated + "...";
+					flat[source] = translated;
 					return true;
 				}
 			}
 
-			// 4. Круглые скобки вокруг ("(Default)" -> "(По умолчанию)")
+			// 5. Круглые скобки вокруг ("(Default)" -> "(По умолчанию)")
 			if (source.StartsWith("(") && source.EndsWith(")") && source.Length > 2)
 			{
 				string trimmed = source.Substring(1, source.Length - 2).Trim();
 				if (flat.TryGetValue(trimmed, out translated))
 				{
 					translated = "(" + translated + ")";
+					flat[source] = translated;
 					return true;
 				}
 			}
 
-			// 5. Квадратные скобки вокруг ("[MOD]" -> "[МОД]")
+			// 6. Квадратные скобки вокруг ("[MOD]" -> "[МОД]")
 			if (source.StartsWith("[") && source.EndsWith("]") && source.Length > 2)
 			{
 				string trimmed = source.Substring(1, source.Length - 2).Trim();
 				if (flat.TryGetValue(trimmed, out translated))
 				{
 					translated = "[" + translated + "]";
+					flat[source] = translated;
 					return true;
 				}
 			}
 
+			flatNoFallback[source] = 1;
 			translated = null;
 			return false;
+		}
+
+		/// <summary>
+		/// Поиск по скомпилированным шаблонам плейсхолдеров для разрешённых строк писем/уведомлений.
+		/// НИКОГДА не вызывать во время OnGUI отрисовки.
+		/// </summary>
+		public static bool TryGetTemplated(string resolved, out string translated)
+		{
+			translated = null;
+			if (string.IsNullOrEmpty(resolved) || templates.IsEmpty) return false;
+			int currentTemplateCount = System.Threading.Volatile.Read(ref templateCount);
+			if (templateNoMatch.TryGetValue(resolved, out int stored) && stored >= currentTemplateCount) return false;
+
+			foreach (var t in templates)
+			{
+				if (resolved.Length < t.MinLength) continue;
+				if (!string.IsNullOrEmpty(t.Anchor) && !resolved.Contains(t.Anchor)) continue;
+
+				Match m;
+				try
+				{
+					m = t.Pattern.Match(resolved);
+				}
+				catch (RegexMatchTimeoutException)
+				{
+					continue;
+				}
+
+				if (m.Success)
+				{
+					string res = t.TargetTemplate;
+					for (int i = 1; i < m.Groups.Count; i++)
+					{
+						string marker = "\u0001" + (i - 1) + "\u0001";
+						res = res.Replace(marker, m.Groups[i].Value);
+					}
+					translated = res;
+					flat[resolved] = translated;
+					return true;
+				}
+			}
+
+			if (templateNoMatch.Count > 50000)
+			{
+				templateNoMatch.Clear();
+				GATLog.Warn("UI Harvest: сброшен отрицательный кэш шаблонов (> 50000).");
+			}
+			templateNoMatch[resolved] = System.Threading.Volatile.Read(ref templateCount);
+			return false;
+		}
+
+		private static void RegisterTemplateIfAny(string source, string translated)
+		{
+			if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(translated)) return;
+			
+			if (templateKeys.Count >= 200000)
+			{
+				if (!templateKeysLimitLogged)
+				{
+					templateKeysLimitLogged = true;
+					GATLog.Warn("UI Harvest: достигнут лимит 200000 уникальных строк для проверки шаблонов. Сбор приостановлен.");
+				}
+				return;
+			}
+
+			if (!templateKeys.TryAdd(source, 1)) return;
+
+			MatchCollection matches = PlaceholderGuard.Ph.Matches(source);
+			if (matches.Count == 0) return;
+
+			var sbRegex = new StringBuilder("^");
+			string anchor = "";
+			int minLen = 0;
+
+			var placeholderToGroupIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+			var groupOrder = new List<string>();
+			int currentGroup = 0;
+			int lastPos = 0;
+
+			foreach (Match m in matches)
+			{
+				if (m.Index > lastPos)
+				{
+					string lit = source.Substring(lastPos, m.Index - lastPos);
+					string esc = Regex.Escape(lit);
+					sbRegex.Append(esc);
+					minLen += lit.Length;
+					if (lit.Length > anchor.Length) anchor = lit;
+				}
+
+				if (m.Value == "\\n") { sbRegex.Append(@"(?:\\n|\r?\n)"); lastPos = m.Index + m.Length; continue; }
+
+				string phVal = m.Value;
+				if (!placeholderToGroupIndex.TryGetValue(phVal, out int groupNum))
+				{
+					currentGroup++;
+					placeholderToGroupIndex[phVal] = currentGroup;
+					groupOrder.Add(phVal);
+					sbRegex.Append(@"([\s\S]+?)");
+				}
+				else
+				{
+					sbRegex.Append(@"\" + groupNum);
+				}
+
+				lastPos = m.Index + m.Length;
+			}
+
+			if (lastPos < source.Length)
+			{
+				string lit = source.Substring(lastPos);
+				string esc = Regex.Escape(lit);
+				sbRegex.Append(esc);
+				minLen += lit.Length;
+				if (lit.Length > anchor.Length) anchor = lit;
+			}
+
+			sbRegex.Append(@"\z");
+
+			if (anchor.Length < 12) return;
+
+			if (System.Threading.Volatile.Read(ref templateCount) >= 5000)
+			{
+				if (!templateCountLimitLogged)
+				{
+					templateCountLimitLogged = true;
+					GATLog.Warn("UI Harvest: достигнут лимит 5000 шаблонов реверс-индекса. Сбор шаблонов приостановлен.");
+				}
+				return;
+			}
+
+			string ruPattern = translated;
+			var sortedPairs = groupOrder.Select((val, idx) => new { val, idx }).OrderByDescending(x => x.val.Length).ToList();
+			foreach (var pair in sortedPairs)
+			{
+				string marker = "\u0001" + pair.idx + "\u0001";
+				ruPattern = ruPattern.Replace(pair.val, marker);
+			}
+
+			for (int i = 0; i < groupOrder.Count; i++)
+			{
+				if (!ruPattern.Contains("\u0001" + i + "\u0001")) return;
+			}
+
+			try
+			{
+				var record = new TemplateRecord
+				{
+					Pattern = new Regex(sbRegex.ToString(), RegexOptions.Singleline, TimeSpan.FromMilliseconds(10)),
+					TargetTemplate = ruPattern,
+					MinLength = minLen,
+					Anchor = anchor
+				};
+				templates.Add(record);
+				System.Threading.Interlocked.Increment(ref templateCount);
+			}
+			catch { }
 		}
 
 		public static void Put(string context, string source, string translated)
@@ -155,6 +371,10 @@ namespace GlobalAutoTranslator
 					flat[source] = translated;
 				else
 					flat.TryAdd(source, translated);
+
+				byte ig;
+				flatNoFallback.TryRemove(source, out ig);
+				RegisterTemplateIfAny(source, translated);
 			}
 			dirtyShards[ShardOf(key)] = 1;
 		}
@@ -208,6 +428,7 @@ namespace GlobalAutoTranslator
 							{
 								sources[k] = srcText;
 								flat[srcText] = val;
+								RegisterTemplateIfAny(srcText, val);
 							}
 							loaded++;
 						}
