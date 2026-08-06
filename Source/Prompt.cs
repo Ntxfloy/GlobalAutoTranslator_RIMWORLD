@@ -11,7 +11,7 @@ namespace GlobalAutoTranslator
 	/// </summary>
 	public static class Prompt
 	{
-		public const string PromptVersion = "25.0";
+		public const string PromptVersion = "27.0";
 
 		public const string System =
 			"Ты переводчик игровой локализации RimWorld на русский язык.\n" +
@@ -37,7 +37,9 @@ namespace GlobalAutoTranslator
 			"Транслитерация допустима только для имён собственных, названий фракций и вымышленных названий.\n" +
 			"13. Пунктуация только русская и только ASCII-символами: круглые скобки ( ), кавычки, запятые, точки. " +
 			"НИКОГДА не используй полноширинные знаки （） ｛｝ ， 。 「」 — движок игры их не понимает.\n" +
-			"14. Если маркер или плейсхолдер встречается в исходнике несколько раз, в переводе он должен встретиться ровно столько же раз. НЕВЕРНО: «⟦1⟧ attacked ⟦2⟧ and ⟦1⟧» → «⟦1⟧ напал на ⟦2⟧». ВЕРНО: «⟦1⟧ attacked ⟦2⟧ and ⟦1⟧» → «⟦1⟧ напал на ⟦2⟧ и ⟦1⟧».\n";
+			"14. Если маркер или плейсхолдер встречается в исходнике несколько раз, в переводе он должен встретиться ровно столько же раз. НЕВЕРНО: «⟦1⟧ attacked ⟦2⟧ and ⟦1⟧» → «⟦1⟧ напал на ⟦2⟧». ВЕРНО: «⟦1⟧ attacked ⟦2⟧ and ⟦1⟧» → «⟦1⟧ напал на ⟦2⟧ и ⟦1⟧».\n" +
+			"15. Если исходная строка уже содержит кириллические фрагменты, это готовые имена пешек, фракций, поселений, квестов, идеологий, предметов или ранее переведённые подстановки. Сохраняй их в переводе дословно, символ в символ. Не переводи повторно, не меняй регистр, не склоняй и не заменяй синонимами. Переведи окружающий текст на русский.\n" +
+			"16. Если в запросе присутствует блок `retry_hints`, он содержит обязательные подсказки для конкретных ключей. Подсказка `retry_hints[id]` относится ТОЛЬКО к строке `items[id]` и обязательна для исполнения.\n";
 
 		/// <summary>Глоссарий каноничных терминов RimWorld. Можно расширять.</summary>
 		public static readonly Dictionary<string, string> Glossary = new Dictionary<string, string>
@@ -72,13 +74,28 @@ namespace GlobalAutoTranslator
 			{ "blueprint", "чертёж" },
 		};
 
-		/// <summary>Собирает user-сообщение: {"context":..,"glossary":{..},"items":{..}}</summary>
+		/// <summary>Собирает user-сообщение: {"context":..,"glossary":{..},"items":{..},"retry_hints":{..}}</summary>
 		public static string BuildUserMessage(
 			string context, Dictionary<string, string> items,
-			Dictionary<string, Dictionary<int, string>> requiredMarkers = null)
+			Dictionary<string, Dictionary<int, string>> requiredMarkers = null,
+			Dictionary<string, string> retryHints = null)
 		{
 			var sb = new StringBuilder(512);
 			sb.Append("{\"context\":\"").Append(MiniJson.Escape(context)).Append("\",");
+
+			if (retryHints != null && retryHints.Count > 0)
+			{
+				sb.Append("\"retry_hints\":{");
+				bool firstH = true;
+				foreach (var kv in retryHints)
+				{
+					if (string.IsNullOrEmpty(kv.Value)) continue;
+					if (!firstH) sb.Append(',');
+					firstH = false;
+					sb.Append('"').Append(MiniJson.Escape(kv.Key)).Append("\":\"").Append(MiniJson.Escape(kv.Value)).Append('"');
+				}
+				sb.Append("},");
+			}
 
 			if (requiredMarkers != null && requiredMarkers.Count > 0)
 			{

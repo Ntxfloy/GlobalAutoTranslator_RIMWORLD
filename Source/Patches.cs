@@ -28,18 +28,16 @@ namespace GlobalAutoTranslator
 		private const int MaxEnqueuedPerSession = 100000;
 		private const int MaxSeenCapacity = 100000;
 
+		public static int EnqueuedThisSession => enqueuedThisSession;
+		public static int SessionLimit => MaxEnqueuedPerSession;
+		public static bool LimitReached => enqueuedThisSession >= MaxEnqueuedPerSession;
+		public static int SeenCount { get { lock (seen) { return seen.Count; } } }
+
 		public static void Note(string s)
 		{
 			if (string.IsNullOrEmpty(s)) return;
 			int len = s.Length;
 			if (len < 2 || len > 600) return;
-
-			// 1. Быстрый отбой по кириллице СРАЗУ в Note (разрывает петлю самоподачи IMGUI)
-			for (int i = 0; i < len; i++)
-			{
-				char c = s[i];
-				if (c >= '\u0400' && c <= '\u052F') return;
-			}
 
 			int currentFrame = UnityEngine.Time.frameCount;
 			if (currentFrame != lastFrameCount)
@@ -49,11 +47,23 @@ namespace GlobalAutoTranslator
 			}
 
 			if (newThisFrame >= 4) return;
-			if (seen.Count >= MaxSeenCapacity) return;
 
 			lock (seen)
 			{
+				if (seen.Count >= MaxSeenCapacity) return;
 				if (seen.Contains(s)) return;
+			}
+
+			if (!PlaceholderGuard.NeedsTranslation(s))
+			{
+				lock (seen)
+				{
+					if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+					{
+						seen.Add(s);
+					}
+				}
+				return;
 			}
 
 			// Если у строки есть числовой/юнитовый хвост после двоеточия ("Global Animation Speed: 100%"), в очередь кладём только голову ("Global Animation Speed")
@@ -78,8 +88,9 @@ namespace GlobalAutoTranslator
 					{
 						lock (seen)
 						{
-							seen.Add(s);
-							if (!seen.Contains(head))
+							if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+								seen.Add(s); // добавляем оригинальную строку чтобы не триггериться
+							if (seen.Count < MaxSeenCapacity && !seen.Contains(head))
 							{
 								seen.Add(head);
 								pending.Enqueue(head);
@@ -99,8 +110,9 @@ namespace GlobalAutoTranslator
 				{
 					lock (seen)
 					{
-						seen.Add(s);
-						if (!seen.Contains(trimmed))
+						if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+							seen.Add(s); // добавляем оригинальную строку чтобы не триггериться
+						if (seen.Count < MaxSeenCapacity && !seen.Contains(trimmed))
 						{
 							seen.Add(trimmed);
 							pending.Enqueue(trimmed);
@@ -113,11 +125,13 @@ namespace GlobalAutoTranslator
 
 			lock (seen)
 			{
-				seen.Add(s);
+				if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+				{
+					seen.Add(s);
+					pending.Enqueue(s);
+					newThisFrame++;
+				}
 			}
-
-			newThisFrame++;
-			pending.Enqueue(s);
 		}
 
 		public static void Drain(int maxPerCall = 30)
@@ -184,7 +198,7 @@ namespace GlobalAutoTranslator
 				if (enqueuedThisSession % 300 == 0)
 				{
 					GATLog.Msg("UI Harvest статус: поставлено в очередь " + enqueuedThisSession +
-					           ", в seen " + seen.Count + ", отфильтровано мусора " + filteredCount);
+					           ", в seen " + SeenCount + ", отфильтровано мусора " + filteredCount);
 				}
 			}
 		}
@@ -215,6 +229,74 @@ namespace GlobalAutoTranslator
 				else if (hasLower && char.IsUpper(c)) return true;
 			}
 			return false;
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 — Автоподгонка шрифта длинных UI-переводов (Widgets.Label(Rect, string)).
+	/// </summary>
+	[HarmonyPatch(typeof(Widgets), "Label", new[] { typeof(UnityEngine.Rect), typeof(string) })]
+	public static class Patch_Widgets_Label_AutoFit
+	{
+		[HarmonyPrefix]
+		[HarmonyPriority(Priority.Low)]
+		public static void Prefix(UnityEngine.Rect rect, string label, out GameFont? __state)
+		{
+			__state = null;
+			var s = GATMod.Settings;
+			if (s == null || !s.autoFitLabels) return;
+
+			try
+			{
+				if (Text.Font != GameFont.Small) return;
+				if (string.IsNullOrEmpty(label) || label.Length < 4) return;
+				if (rect.width < 24f || rect.height < 6f || rect.height > 200f) return;
+
+				bool hasCyr = false;
+				for (int i = 0; i < label.Length; i++)
+				{
+					char c = label[i];
+					if (c >= '\u0400' && c <= '\u052F') { hasCyr = true; break; }
+				}
+				if (!hasCyr) return;
+
+				if (Text.CalcHeight(label, rect.width) > rect.height + 0.5f)
+				{
+					GameFont orig = Text.Font;
+					__state = orig;
+					Text.Font = GameFont.Tiny;
+					if (Text.Font != GameFont.Tiny)
+					{
+						Text.Font = orig;
+						__state = null;
+					}
+				}
+			}
+			catch
+			{
+				if (__state.HasValue)
+				{
+					try { Text.Font = __state.Value; } catch { }
+				}
+				__state = null;
+			}
+		}
+
+		[HarmonyPostfix]
+		public static void Postfix(ref GameFont? __state)
+		{
+			if (__state.HasValue)
+			{
+				try
+				{
+					Text.Font = __state.Value;
+				}
+				catch { }
+				finally
+				{
+					__state = null;
+				}
+			}
 		}
 	}
 
@@ -253,15 +335,15 @@ namespace GlobalAutoTranslator
 		{
 			if (quest == null) return;
 
-			// 1. Имя квеста (заголовок) — регистр как в оригинале (context="title"), кэшируем на диск (isVolatile=false)
-			if (!string.IsNullOrEmpty(quest.name) && PlaceholderGuard.ShouldTranslate(quest.name))
+			// 1. Имя квеста (заголовок)
+			if (!string.IsNullOrEmpty(quest.name))
 			{
 				string cached;
 				if (TranslationCache.TryGet("title", quest.name, out cached))
 				{
 					quest.name = cached;
 				}
-				else
+				else if (PlaceholderGuard.ShouldTranslate(quest.name))
 				{
 					string origName = quest.name;
 					TranslateWorker.Enqueue("title", origName, v => {
@@ -270,16 +352,16 @@ namespace GlobalAutoTranslator
 				}
 			}
 
-			// 2. Описание квеста — уникальный текст с именами и числами, переводим без сохранения в постоянный диск-кэш (isVolatile=true)
+			// 2. Описание квеста
 			string descRaw = quest.description.RawText;
-			if (!string.IsNullOrEmpty(descRaw) && PlaceholderGuard.ShouldTranslate(descRaw))
+			if (!string.IsNullOrEmpty(descRaw))
 			{
 				string cached;
 				if (TranslationCache.TryGet("description", descRaw, out cached))
 				{
 					quest.description = new TaggedString(cached);
 				}
-				else
+				else if (PlaceholderGuard.ShouldTranslate(descRaw))
 				{
 					TranslateWorker.Enqueue("description", descRaw, v => {
 						DefPostProcessor.QueueApply(() => { quest.description = new TaggedString(v); });
@@ -292,20 +374,20 @@ namespace GlobalAutoTranslator
 		{
 			if (letter == null) return;
 
-			// Заголовок письма на панели — заглавная буква (context="title")
+			// Заголовок письма на панели
 			try
 			{
 				if (letterLabelRef != null)
 				{
 					string labelRaw = letterLabelRef(letter).RawText;
-					if (!string.IsNullOrEmpty(labelRaw) && PlaceholderGuard.ShouldTranslate(labelRaw))
+					if (!string.IsNullOrEmpty(labelRaw))
 					{
 						string cached;
 						if (TranslationCache.TryGet("title", labelRaw, out cached))
 						{
 							letterLabelRef(letter) = new TaggedString(cached);
 						}
-						else
+						else if (PlaceholderGuard.ShouldTranslate(labelRaw))
 						{
 							TranslateWorker.Enqueue("title", labelRaw, v => {
 								DefPostProcessor.QueueApply(() => { letterLabelRef(letter) = new TaggedString(v); });
@@ -320,14 +402,14 @@ namespace GlobalAutoTranslator
 			var cl = letter as ChoiceLetter;
 			if (cl != null)
 			{
-				if (!string.IsNullOrEmpty(cl.title) && PlaceholderGuard.ShouldTranslate(cl.title))
+				if (!string.IsNullOrEmpty(cl.title))
 				{
 					string cached;
 					if (TranslationCache.TryGet("title", cl.title, out cached))
 					{
 						cl.title = cached;
 					}
-					else
+					else if (PlaceholderGuard.ShouldTranslate(cl.title))
 					{
 						string origTitle = cl.title;
 						TranslateWorker.Enqueue("title", origTitle, v => {
@@ -341,14 +423,14 @@ namespace GlobalAutoTranslator
 					if (choiceLetterTextRef != null)
 					{
 						string textRaw = choiceLetterTextRef(cl).RawText;
-						if (!string.IsNullOrEmpty(textRaw) && PlaceholderGuard.ShouldTranslate(textRaw))
+						if (!string.IsNullOrEmpty(textRaw))
 						{
 							string cached;
 							if (TranslationCache.TryGet("description", textRaw, out cached))
 							{
 								choiceLetterTextRef(cl) = new TaggedString(cached);
 							}
-							else
+							else if (PlaceholderGuard.ShouldTranslate(textRaw))
 							{
 								TranslateWorker.Enqueue("description", textRaw, v => {
 									DefPostProcessor.QueueApply(() => { choiceLetterTextRef(cl) = new TaggedString(v); });

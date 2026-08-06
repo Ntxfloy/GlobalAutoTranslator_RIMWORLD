@@ -107,26 +107,114 @@ namespace GlobalAutoTranslator
 			return list;
 		}
 
-		/// <summary>Стоит ли вообще отправлять строку на перевод. Исходный язык любой.</summary>
-		public static bool ShouldTranslate(string src)
+		/// <summary>
+		/// Единый метод проверки: нуждается ли строка в переводе на русский язык.
+		/// Поддерживает чистые и смешанные строки (с исходными именами/русскими фразами).
+		/// </summary>
+		public static bool NeedsTranslation(string text)
 		{
-			if (string.IsNullOrEmpty(src)) return false;
-			if (src.Length > 4000) return false;                 // аномалия, не текст интерфейса
-			if (src.Contains("->")) return false;                // синтаксис правил грамматики RimWorld
+			if (string.IsNullOrEmpty(text)) return false;
+			if (text.Length > 4000) return false;
+			if (text.Contains("->")) return false; // грамматика RimWorld (RulePackDef)
+
+			string clean = StripTagsAndPlaceholders(text);
 
 			int cyr, lat, cjk, other;
-			CountScripts(src, out cyr, out lat, out cjk, out other);
+			CountScripts(clean, out cyr, out lat, out cjk, out other);
 
 			int foreign = lat + cjk + other;
-			if (foreign == 0) return false;                      // цифры, символы, defName без букв
-			if (cyr > 0 && cyr >= foreign) return false;         // строка уже преимущественно русская
+			if (foreign == 0) return false; // нет латиницы, CJK или других букв
 
-			// Иероглифам и слоговому письму пробелы не нужны: 剑 — это уже слово.
-			if (cjk > 0 || other > 0) return true;
+			// Чистый зарубежный текст (без кириллицы)
+			if (cyr == 0)
+			{
+				if (cjk > 0 || other > 0) return true;
+				if (lat < 2) return false;
+				if (clean.IndexOf(' ') < 0 && clean.Length < 3) return false;
+				return true;
+			}
 
-			if (lat < 2) return false;                           // одна буква — не текст
-			if (src.IndexOf(' ') < 0 && src.Length < 3) return false;
-			return true;
+			// Смешанный текст (есть кириллица И зарубежное письмо)
+			if (cjk >= 2 || other >= 4) return true;
+
+			// Проверка латиницы в смешанном тексте через ClassifyChar (с поддержкой расширенной латиницы é, ä, ñ, ł, ş)
+			int meaningfulLatinWords = 0;
+			int latinLetters = 0;
+			int currentWordLen = 0;
+
+			for (int i = 0; i < clean.Length; i++)
+			{
+				char c = clean[i];
+				if (ClassifyChar(c) == ScriptKind.Latin)
+				{
+					currentWordLen++;
+				}
+				else
+				{
+					if (currentWordLen > 0)
+					{
+						latinLetters += currentWordLen;
+						if (currentWordLen >= 2) meaningfulLatinWords++;
+						currentWordLen = 0;
+					}
+				}
+			}
+			if (currentWordLen > 0)
+			{
+				latinLetters += currentWordLen;
+				if (currentWordLen >= 2) meaningfulLatinWords++;
+			}
+
+			// Требование: не менее 3 латинских слов И не менее 12 латинских букв
+			if (meaningfulLatinWords >= 3 && latinLetters >= 12)
+				return true;
+
+			return false; // По умолчанию считаем строку уже русской
+		}
+
+		/// <summary>Алиас для единообразия.</summary>
+		public static bool ShouldTranslate(string src)
+		{
+			return NeedsTranslation(src);
+		}
+
+		private static readonly Regex TagRegex = new Regex(
+			@"⟦[^⟧]*⟧|<[^>]*>|\{[^{}]*\}|\[\[[^\]]*\]\]|\[[^\]]*\]",
+			RegexOptions.Compiled);
+
+		public static string StripTagsAndPlaceholders(string s)
+		{
+			if (string.IsNullOrEmpty(s)) return string.Empty;
+			return TagRegex.Replace(s, " ");
+		}
+
+		public static Dictionary<string, int> ExtractCyrillicFragments(string s)
+		{
+			var map = new Dictionary<string, int>(StringComparer.Ordinal);
+			if (string.IsNullOrEmpty(s)) return map;
+
+			var matches = Regex.Matches(s, @"[\u0400-\u052F]{4,}");
+			foreach (Match m in matches)
+			{
+				string val = m.Value;
+				int count;
+				map.TryGetValue(val, out count);
+				map[val] = count + 1;
+			}
+			return map;
+		}
+
+		public static int CountOccurrencesOrdinal(string text, string fragment)
+		{
+			if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(fragment)) return 0;
+			int count = 0;
+			int idx = 0;
+			while ((idx = text.IndexOf(fragment, idx, StringComparison.Ordinal)) != -1)
+			{
+				count++;
+				idx += fragment.Length;
+			}
+			return count;
 		}
 
 		/// <summary>
@@ -154,6 +242,23 @@ namespace GlobalAutoTranslator
 			{
 				reason = "плейсхолдеры не совпадают: [" + string.Join(", ", a) + "] -> [" + string.Join(", ", b) + "]";
 				return false;
+			}
+
+			// Проверка сохранения русских фрагментов из исходника с помощью регистрозависимого CountOccurrencesOrdinal
+			var srcCyrFrags = ExtractCyrillicFragments(src);
+			if (srcCyrFrags.Count > 0)
+			{
+				foreach (var kv in srcCyrFrags)
+				{
+					string frag = kv.Key;
+					int srcCount = kv.Value;
+					int dstCount = CountOccurrencesOrdinal(dst, frag);
+					if (dstCount < srcCount)
+					{
+						reason = "русский фрагмент исходника потерян";
+						return false;
+					}
+				}
 			}
 
 			// Иероглифическая строка при переводе на русский разрастается в разы,

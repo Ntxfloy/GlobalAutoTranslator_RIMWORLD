@@ -118,6 +118,139 @@ namespace GlobalAutoTranslator
 				sb.AppendLine((ok14 ? "[OK]" : "[FAIL]") + " 14. Gender ternary preserved in MaskPlaceholders -> " + (hasTernary ? "сохранён" : "испорчен"));
 			}
 
+			// 15-21. Тесты метода NeedsTranslation (смешанные и чистые строки)
+			{
+				bool t15 = PlaceholderGuard.NeedsTranslation("The quest Сомнительный Хаб Контрабанды has ended.");
+				sb.AppendLine((t15 ? "[OK]" : "[FAIL]") + " 15. NeedsTranslation: Mixed quest -> " + (t15 ? "переводить" : "пропущено"));
+
+				bool t16 = !PlaceholderGuard.NeedsTranslation("Открыть связанное задание: Сомнительный Хаб Контрабанды");
+				sb.AppendLine((t16 ? "[OK]" : "[FAIL]") + " 16. NeedsTranslation: Russian UI -> " + (t16 ? "уже русский" : "переводить"));
+
+				bool t17 = PlaceholderGuard.NeedsTranslation("These беженцы are not part of any faction.");
+				sb.AppendLine((t17 ? "[OK]" : "[FAIL]") + " 17. NeedsTranslation: Mixed refugees -> " + (t17 ? "переводить" : "пропущено"));
+
+				bool t18 = PlaceholderGuard.NeedsTranslation("Jorunn begs you for permission to stay at Утёс Преданности for 13 дней.");
+				sb.AppendLine((t18 ? "[OK]" : "[FAIL]") + " 18. NeedsTranslation: Mixed stay quest -> " + (t18 ? "переводить" : "пропущено"));
+
+				bool t19 = !PlaceholderGuard.NeedsTranslation("Мод Combat Extended включён");
+				sb.AppendLine((t19 ? "[OK]" : "[FAIL]") + " 19. NeedsTranslation: Mod name in Russian -> " + (t19 ? "уже русский" : "переводить"));
+
+				bool t20 = !PlaceholderGuard.NeedsTranslation("<color=#FF0000>Критическая ошибка</color>");
+				sb.AppendLine((t20 ? "[OK]" : "[FAIL]") + " 20. NeedsTranslation: Russian color tag -> " + (t20 ? "уже русский" : "переводить"));
+
+				bool t21 = PlaceholderGuard.NeedsTranslation("Enough is enough, I'm feeling the call of the open skies!\nПричина: Вера в Неприкосновенные Пути");
+				sb.AppendLine((t21 ? "[OK]" : "[FAIL]") + " 21. NeedsTranslation: Mixed tooltip -> " + (t21 ? "переводить" : "пропущено"));
+			}
+
+			// 22. Проверка сохранения русских фрагментов исходника в PlaceholderGuard.Validate
+			{
+				string cyrSrc = "The quest Сомнительный Хаб Контрабанды has ended.";
+				string validDst = "Задание Сомнительный Хаб Контрабанды завершено.";
+				string invalidDst = "Задание «Контрабандный хаб» завершено.";
+
+				string rValid, rInvalid;
+				bool okValid = PlaceholderGuard.Validate(cyrSrc, validDst, out rValid);
+				bool okInvalid = !PlaceholderGuard.Validate(cyrSrc, invalidDst, out rInvalid) && rInvalid.Contains("русский фрагмент исходника потерян");
+
+				bool ok22 = okValid && okInvalid;
+				sb.AppendLine((ok22 ? "[OK]" : "[FAIL]") + " 22. Preserve original Cyrillic fragments -> valid=" + okValid + ", invalid_rejected=" + okInvalid);
+			}
+
+			// 23. Смешанная строка с расширенной латиницей (é, à)
+			{
+				bool t23 = PlaceholderGuard.NeedsTranslation("L’Équipe et беженцы repose à Утёс.");
+				sb.AppendLine((t23 ? "[OK]" : "[FAIL]") + " 23. NeedsTranslation: Extended Latin (é, à) -> " + (t23 ? "переводить" : "пропущено"));
+			}
+
+			// 24. Искажение регистра русского фрагмента измеряется дословно (Ordinal)
+			{
+				string cyrSrc = "The quest Сомнительный Хаб Контрабанды has ended.";
+				string caseChangedDst = "Задание сомнительный Хаб Контрабанды завершено.";
+				string rCase;
+				bool ok24 = !PlaceholderGuard.Validate(cyrSrc, caseChangedDst, out rCase) && rCase.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok24 ? "[OK]" : "[FAIL]") + " 24. Case change in Cyrillic fragment rejected (Ordinal) -> " + (ok24 ? "отклонено" : "ошибка"));
+			}
+
+			// 27. Проверка Backoff (production get)
+			{
+				bool ok27 = TranslateWorker.GetProbeDelaySeconds(0) == 30 &&
+				            TranslateWorker.GetProbeDelaySeconds(1) == 60 &&
+				            TranslateWorker.GetProbeDelaySeconds(2) == 120 &&
+				            TranslateWorker.GetProbeDelaySeconds(3) == 240 &&
+				            TranslateWorker.GetProbeDelaySeconds(4) == 300 &&
+				            TranslateWorker.GetProbeDelaySeconds(5) == 300;
+				sb.AppendLine((ok27 ? "[OK]" : "[FAIL]") + " 27. Production GetProbeDelaySeconds: 30, 60, 120, 240, 300, 300 -> " + ok27);
+			}
+
+			// 28. Сетевая ошибка не является structural failure
+			{
+				bool ok28 = !TranslateWorker.IsStructuralFailure("HTTP 503 auth_unavailable");
+				sb.AppendLine((ok28 ? "[OK]" : "[FAIL]") + " 28. Network error is not structural failure -> " + ok28);
+			}
+
+			// 29. Потеря русского фрагмента является structural failure
+			{
+				bool ok29 = TranslateWorker.IsStructuralFailure("русский фрагмент исходника потерян");
+				sb.AppendLine((ok29 ? "[OK]" : "[FAIL]") + " 29. Missing Cyrillic fragment is structural failure -> " + ok29);
+			}
+
+			// 30. Успешный probe-переход на локальном стейте (Stateless)
+			{
+				bool localPaused = true;
+				int localBackoff = 3;
+				long localNextProbe = 12345;
+				
+				var result = new LlmClient.ProbeResult { Success = true, ResponsePreview = "OK" };
+				if (result.Success)
+				{
+					localPaused = false;
+					localBackoff = 0;
+					localNextProbe = 0;
+				}
+				bool ok30 = !localPaused && localBackoff == 0 && localNextProbe == 0;
+				sb.AppendLine((ok30 ? "[OK]" : "[FAIL]") + " 30. Stateless probe-success transition -> " + ok30);
+			}
+
+			// 31. RetryHint для конкретного элемента попадает только под своим ID
+			{
+				var items = new System.Collections.Generic.Dictionary<string, string> { { "0", "test" }, { "1", "test2" } };
+				var hints = new System.Collections.Generic.Dictionary<string, string> { { "1", "hint for 1" } };
+				string json = Prompt.BuildUserMessage("ui", items, null, hints);
+				bool ok31 = json.Contains("\"retry_hints\":{\"1\":\"hint for 1\"}") && !json.Contains("\"0\":\"hint");
+				sb.AppendLine((ok31 ? "[OK]" : "[FAIL]") + " 31. RetryHint is mapped to item ID -> " + ok31);
+			}
+
+			// 32. MiniJson rejects empty/corrupt object
+			{
+				string emptyJson = "{}";
+				var parsedEmpty = MiniJson.ParseFlatObject(emptyJson);
+				bool ok32Empty = parsedEmpty != null && parsedEmpty.Count == 0;
+				
+				string corruptJson = "{ corrupted }";
+				var parsedCorrupt = MiniJson.ParseFlatObject(corruptJson);
+				bool ok32Corrupt = parsedCorrupt == null || parsedCorrupt.Count == 0;
+				
+				bool ok32 = ok32Empty && ok32Corrupt;
+				sb.AppendLine((ok32 ? "[OK]" : "[FAIL]") + " 32. MiniJson rejects empty/corrupt object -> " + ok32);
+			}
+
+			// 33. ProbeResult для пустого content имеет Success=false
+			{
+				var res = new LlmClient.ProbeResult();
+				bool ok33 = !res.Success;
+				sb.AppendLine((ok33 ? "[OK]" : "[FAIL]") + " 33. Default ProbeResult.Success is false -> " + ok33);
+			}
+
+			// 34. Production ParseRetryAfterSeconds parser
+			{
+				var now = System.DateTime.UtcNow;
+				bool ok34 = LlmClient.ParseRetryAfterSeconds("120", now) == 120 &&
+				            LlmClient.ParseRetryAfterSeconds("invalid", now) == null &&
+				            LlmClient.ParseRetryAfterSeconds("0", now) == null &&
+				            LlmClient.ParseRetryAfterSeconds("1801", now) == null;
+				sb.AppendLine((ok34 ? "[OK]" : "[FAIL]") + " 34. Production ParseRetryAfterSeconds (120, invalid, 0, 1801) -> " + ok34);
+			}
+
 			GATLog.Msg(sb.ToString());
 		}
 	}

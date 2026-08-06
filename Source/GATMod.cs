@@ -24,6 +24,7 @@ namespace GlobalAutoTranslator
 		public bool translateKeyed = true;     // L2
 		public bool translateWidgets = true;   // L3 — перехват интерфейса на лету
 		public bool translateDescriptions = true;
+		public bool autoFitLabels = true;      // Автоподгонка шрифта длинного текста
 
 		public bool verboseLogging = true;
 
@@ -42,6 +43,7 @@ namespace GlobalAutoTranslator
 			Scribe_Values.Look(ref translateKeyed, "translateKeyed", true);
 			Scribe_Values.Look(ref translateWidgets, "translateWidgets", true);
 			Scribe_Values.Look(ref translateDescriptions, "translateDescriptions", true);
+			Scribe_Values.Look(ref autoFitLabels, "autoFitLabels", true);
 			Scribe_Values.Look(ref verboseLogging, "verboseLogging", true);
 		}
 	}
@@ -92,6 +94,7 @@ namespace GlobalAutoTranslator
 			list.CheckboxLabeled("Переводить описания (дорого по токенам)", ref Settings.translateDescriptions);
 			list.CheckboxLabeled("Переводить Keyed-строки (текст интерфейса)", ref Settings.translateKeyed);
 			list.CheckboxLabeled("Слой 3: перехват интерфейса на лету (UI / кнопки / диалоги; может дать просадку кадров)", ref Settings.translateWidgets);
+			list.CheckboxLabeled("Уменьшать шрифт, если перевод не влезает", ref Settings.autoFitLabels);
 			list.CheckboxLabeled("Подробный лог", ref Settings.verboseLogging);
 			list.CheckboxLabeled("Отправлять reasoning_effort=none", ref Settings.sendReasoningEffortNone);
 			list.CheckboxLabeled("Требовать response_format=json_object", ref Settings.requestJsonObject);
@@ -104,7 +107,25 @@ namespace GlobalAutoTranslator
 			           (TranslateWorker.Paused ? "  [ПАУЗА: прокси недоступен]" : ""));
 
 			list.Gap(6f);
-			if (list.ButtonText("Проверить связь и качество перевода"))
+			if (list.ButtonText("Проверить соединение с ИИ сейчас"))
+			{
+				selfTestResult = "Проверка соединения...";
+				var t = new Thread(() =>
+				{
+					try
+					{
+						selfTestResult = TranslateWorker.RunProbe(ignoreCooldown: true);
+					}
+					catch (System.Exception e)
+					{
+						selfTestResult = "Ошибка проверки: " + e.Message;
+					}
+				});
+				t.IsBackground = true;
+				t.Name = "GAT-Manual-Probe";
+				t.Start();
+			}
+			if (list.ButtonText("Проверить качество перевода (расширенный тест)"))
 			{
 				selfTestResult = "Запрос отправлен, жди...";
 				var t = new Thread(() => { selfTestResult = LlmClient.SelfTest(Settings); });

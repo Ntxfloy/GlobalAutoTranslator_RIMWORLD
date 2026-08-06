@@ -76,7 +76,7 @@ namespace GlobalAutoTranslator
 			return permanentFailed.ContainsKey(key);
 		}
 
-		public static void AddPermanentFailed(string key, string source)
+		public static void AddPermanentFailed(string key, string source, string reason = null)
 		{
 			if (string.IsNullOrEmpty(key)) return;
 			if (permanentFailed.Count >= MaxPermanentFailed)
@@ -101,7 +101,10 @@ namespace GlobalAutoTranslator
 					{
 						File.WriteAllText(path, ExpectedFailedHeader + "\n", Encoding.UTF8);
 					}
-					File.AppendAllText(path, key + "\t" + EscapeCell(source ?? "") + "\n", Encoding.UTF8);
+					string entry = key + "\t" + EscapeCell(source ?? "");
+					if (!string.IsNullOrEmpty(reason))
+						entry += "\t" + EscapeCell(reason);
+					File.AppendAllText(path, entry + "\n", Encoding.UTF8);
 				}
 			}
 			catch (Exception e)

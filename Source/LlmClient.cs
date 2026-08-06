@@ -15,11 +15,20 @@ namespace GlobalAutoTranslator
 	/// </summary>
 	public static class LlmClient
 	{
+		public struct ProbeResult
+		{
+			public bool Success;
+			public int HttpCode;
+			public string Error;
+			public int? RetryAfterSeconds;
+			public string ResponsePreview;
+		}
+
 		/// <summary>
 		/// Отправляет батч на перевод. Возвращает карту id -> перевод или null при сбое.
 		/// </summary>
 		public static Dictionary<string, string> TranslateBatch(
-			GATSettings s, string context, Dictionary<string, string> items, bool isRetry = false)
+			GATSettings s, string context, Dictionary<string, string> items, bool isRetry = false, Dictionary<string, string> retryHints = null)
 		{
 			if (items == null || items.Count == 0) return new Dictionary<string, string>();
 
@@ -35,7 +44,7 @@ namespace GlobalAutoTranslator
 
 			float temperature = isRetry ? 0.3f : 0f;
 			var requiredMarkers = isRetry ? markerMaps : null;
-			string body = BuildRequestBody(s, context, maskedItems, temperature, requiredMarkers);
+			string body = BuildRequestBody(s, context, maskedItems, temperature, requiredMarkers, retryHints);
 
 			for (int attempt = 1; attempt <= 3; attempt++)
 			{
@@ -114,7 +123,8 @@ namespace GlobalAutoTranslator
 
 		private static string BuildRequestBody(
 			GATSettings s, string context, Dictionary<string, string> items,
-			float temperature = 0f, Dictionary<string, Dictionary<int, string>> requiredMarkers = null)
+			float temperature = 0f, Dictionary<string, Dictionary<int, string>> requiredMarkers = null,
+			Dictionary<string, string> retryHints = null)
 		{
 			var sb = new StringBuilder(2048);
 			sb.Append('{');
@@ -126,18 +136,18 @@ namespace GlobalAutoTranslator
 			sb.Append("\"messages\":[");
 			sb.Append("{\"role\":\"system\",\"content\":\"").Append(MiniJson.Escape(Prompt.System)).Append("\"},");
 			sb.Append("{\"role\":\"user\",\"content\":\"")
-			  .Append(MiniJson.Escape(Prompt.BuildUserMessage(context, items, requiredMarkers)))
+			  .Append(MiniJson.Escape(Prompt.BuildUserMessage(context, items, requiredMarkers, retryHints)))
 			  .Append("\"}");
 			sb.Append("]}");
 			return sb.ToString();
 		}
 
-		private static string Post(GATSettings s, string body)
+		private static string Post(GATSettings s, string body, int timeoutOverrideSeconds = 0)
 		{
 			var req = (HttpWebRequest)WebRequest.Create(s.endpoint);
 			req.Method = "POST";
 			req.ContentType = "application/json; charset=utf-8";
-			req.Timeout = Math.Max(15, s.timeoutSeconds) * 1000;
+			req.Timeout = (timeoutOverrideSeconds > 0 ? timeoutOverrideSeconds : Math.Max(15, s.timeoutSeconds)) * 1000;
 			req.ReadWriteTimeout = req.Timeout;
 			req.KeepAlive = true;
 			req.Proxy = null; // не тащимся через системный прокси к localhost
@@ -151,6 +161,79 @@ namespace GlobalAutoTranslator
 			using (var resp = (HttpWebResponse)req.GetResponse())
 			using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
 				return sr.ReadToEnd();
+		}
+
+		public static int? ParseRetryAfterSeconds(string value, DateTime utcNow)
+		{
+			if (string.IsNullOrEmpty(value)) return null;
+			int parsed;
+			if (int.TryParse(value.Trim(), out parsed))
+			{
+				if (parsed > 0 && parsed <= 1800)
+					return parsed;
+			}
+			return null;
+		}
+
+		public static ProbeResult Probe(GATSettings s)
+		{
+			var result = new ProbeResult { Success = false };
+			string body = BuildProbeRequestBody(s);
+			try
+			{
+				string raw = Post(s, body, 20);
+				result.HttpCode = 200;
+				
+				string content = MiniJson.ExtractStringField(raw, "content");
+				if (string.IsNullOrEmpty(content))
+				{
+					result.Error = "Empty content";
+				}
+				else
+				{
+					result.Success = true;
+					result.ResponsePreview = Trim(content, 100);
+				}
+			}
+			catch (WebException we)
+			{
+				var resp = we.Response as HttpWebResponse;
+				if (resp != null)
+				{
+					result.HttpCode = (int)resp.StatusCode;
+					if (result.HttpCode == 429)
+					{
+						string retryAfterStr = resp.Headers["Retry-After"];
+						result.RetryAfterSeconds = ParseRetryAfterSeconds(retryAfterStr, DateTime.UtcNow);
+					}
+					try
+					{
+						using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+							result.Error = Trim(sr.ReadToEnd(), 500);
+					}
+					catch { result.Error = we.Message; }
+				}
+				else
+				{
+					result.Error = we.Message;
+				}
+			}
+			catch (Exception e)
+			{
+				result.Error = e.Message;
+			}
+			return result;
+		}
+
+		private static string BuildProbeRequestBody(GATSettings s)
+		{
+			var sb = new StringBuilder(256);
+			sb.Append('{');
+			sb.Append("\"model\":\"").Append(MiniJson.Escape(s.model)).Append("\",");
+			sb.Append("\"stream\":false,");
+			if (s.sendReasoningEffortNone) sb.Append("\"reasoning_effort\":\"none\",");
+			sb.Append("\"messages\":[{\"role\":\"user\",\"content\":\"Reply only OK\"}]}");
+			return sb.ToString();
 		}
 
 		/// <summary>Проверка связи для кнопки в настройках. Запускать в отдельном потоке.</summary>
@@ -170,8 +253,6 @@ namespace GlobalAutoTranslator
 			};
 			var res = TranslateBatch(s, "label", probe);
 			if (res == null) return "ОШИБКА: нет ответа. Смотри лог игры (Ctrl+F12 — окно ошибок).";
-
-			TranslateWorker.ClearQuarantine(); // Если связь появилась, снимаем воркер с паузы
 
 			var sb = new StringBuilder();
 			foreach (var kv in probe)
