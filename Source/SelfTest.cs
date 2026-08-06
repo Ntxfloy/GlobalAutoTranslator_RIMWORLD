@@ -251,6 +251,148 @@ namespace GlobalAutoTranslator
 				sb.AppendLine((ok34 ? "[OK]" : "[FAIL]") + " 34. Production ParseRetryAfterSeconds (120, invalid, 0, 1801) -> " + ok34);
 			}
 
+			// 35. Вложенный lookup маскируется одним маркером и восстанавливается посимвольно точно
+			{
+				string src35 = "{lookup: {lookup: {GENDER}; Plural; 1}; Case; 2}";
+				System.Collections.Generic.Dictionary<int, string> map35;
+				string masked35 = PlaceholderGuard.MaskPlaceholders(src35, out map35);
+				string unmasked35 = PlaceholderGuard.UnmaskPlaceholders(masked35, map35);
+				bool ok35 = map35.Count == 1 && unmasked35 == src35;
+				sb.AppendLine((ok35 ? "[OK]" : "[FAIL]") + " 35. Nested lookup masked as single marker and restored -> " + ok35);
+			}
+
+			// 36. Два lookup в одной строке дают два разных маркера
+			{
+				string src36 = "{lookup: A} и {lookup: B}";
+				System.Collections.Generic.Dictionary<int, string> map36;
+				string masked36 = PlaceholderGuard.MaskPlaceholders(src36, out map36);
+				bool ok36 = map36.Count == 2 && masked36.Contains("⟦1⟧") && masked36.Contains("⟦2⟧");
+				sb.AppendLine((ok36 ? "[OK]" : "[FAIL]") + " 36. Two lookups produce two distinct markers -> " + ok36);
+			}
+
+			// 37. Обычные {PAWN_labelShort} и {0} вне lookup работают как раньше
+			{
+				string src37 = "{PAWN_labelShort} and {0}";
+				System.Collections.Generic.Dictionary<int, string> map37;
+				string masked37 = PlaceholderGuard.MaskPlaceholders(src37, out map37);
+				string unmasked37 = PlaceholderGuard.UnmaskPlaceholders(masked37, map37);
+				bool ok37 = map37.Count == 2 && unmasked37 == src37;
+				sb.AppendLine((ok37 ? "[OK]" : "[FAIL]") + " 37. Regular placeholders outside lookup work normally -> " + ok37);
+			}
+
+			// 38. Незакрытая скобка в конструкции lookup не приводит к исключению
+			{
+				bool ok38 = false;
+				try
+				{
+					string src38 = "{lookup: {GENDER}; Plural; 1";
+					System.Collections.Generic.Dictionary<int, string> map38;
+					string masked38 = PlaceholderGuard.MaskPlaceholders(src38, out map38);
+					ok38 = !string.IsNullOrEmpty(masked38);
+				}
+				catch { ok38 = false; }
+				sb.AppendLine((ok38 ? "[OK]" : "[FAIL]") + " 38. Unclosed lookup brace does not throw exception -> " + ok38);
+			}
+
+			// 39. «Изготавливает mich tc-2000 helmet» -> «Изготавливает шлем MICH TC-2000» проходит проверку
+			{
+				string r39;
+				bool ok39 = PlaceholderGuard.Validate("Изготавливает mich tc-2000 helmet", "Изготавливает шлем MICH TC-2000", out r39);
+				sb.AppendLine((ok39 ? "[OK]" : "[FAIL]") + " 39. Recipe verb validation passes -> " + ok39);
+			}
+
+			// 40. «Jorunn просит остаться в Утёс Преданности» с потерянным «Утёс Преданности» отклоняется
+			{
+				string r40;
+				bool ok40 = !PlaceholderGuard.Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в локации", out r40) && r40.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok40 ? "[OK]" : "[FAIL]") + " 40. Missing proper location name rejected -> " + ok40);
+			}
+
+			// 41. «Любые патроны для Unique trench gun» с переведённым названием оружия проходит
+			{
+				string r41;
+				bool ok41 = PlaceholderGuard.Validate("Любые патроны для Unique trench gun", "Любые патроны для траншейного ружья Unique", out r41);
+				sb.AppendLine((ok41 ? "[OK]" : "[FAIL]") + " 41. Service words with translated weapon name passes -> " + ok41);
+			}
+
+			// 42. Письмо с потерянным названием фракции «Племя Бардал» отклоняется
+			{
+				string r42;
+				bool ok42 = !PlaceholderGuard.Validate("Письмо от фракции Племя Бардал о союзе.", "Письмо от фракции о союзе.", out r42) && r42.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok42 ? "[OK]" : "[FAIL]") + " 42. Missing faction name in letter rejected -> " + ok42);
+			}
+
+			// 43. «Любые патроны для Unique trench gun» -> «Патроны для траншейного ружья» проходит проверку
+			{
+				string r43;
+				bool ok43 = PlaceholderGuard.Validate("Любые патроны для Unique trench gun", "Патроны для траншейного ружья", out r43);
+				sb.AppendLine((ok43 ? "[OK]" : "[FAIL]") + " 43. Preposition and service word sentence passes -> " + ok43);
+			}
+
+			// 44. «Изготавливает mich tc-2000 helmet» -> «Создаёт шлем MICH TC-2000» проходит проверку
+			{
+				string r44;
+				bool ok44 = PlaceholderGuard.Validate("Изготавливает mich tc-2000 helmet", "Создаёт шлем MICH TC-2000", out r44);
+				sb.AppendLine((ok44 ? "[OK]" : "[FAIL]") + " 44. Verb change with recipe passes -> " + ok44);
+			}
+
+			// 45. «Отряд от Племя Бардал идёт к вам» -> «Отряд от Племени Бардал идёт к вам» проходит: слово «Бардал» сохранено
+			{
+				string r45;
+				bool ok45 = PlaceholderGuard.Validate("Отряд от Племя Бардал идёт к вам", "Отряд от Племени Бардал идёт к вам", out r45);
+				sb.AppendLine((ok45 ? "[OK]" : "[FAIL]") + " 45. Inflected multi-word faction passes -> " + ok45);
+			}
+
+			// 46. «Jorunn просит остаться в Утёс Преданности» -> «Jorunn просит остаться в локации» отклоняется: потеряны «Утёс» и «Преданности»
+			{
+				string r46;
+				bool ok46 = !PlaceholderGuard.Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в локации", out r46) && r46.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok46 ? "[OK]" : "[FAIL]") + " 46. Missing both capital words rejected -> " + ok46);
+			}
+
+			// 47. GetPlaceholderMatches на строке длиной 4000 символов без lookup отрабатывает без исключений, и в ней сработал быстрый выход
+			{
+				string longStr = new string('A', 4000) + " {0} " + new string('B', 100);
+				var matches47 = PlaceholderGuard.GetPlaceholderMatches(longStr);
+				bool ok47 = matches47.Count == 1 && matches47[0].Value == "{0}";
+				sb.AppendLine((ok47 ? "[OK]" : "[FAIL]") + " 47. Long string fast path works efficiently -> " + ok47);
+			}
+
+			// 48. Validate("Комната слишком мала for the colonist", "Помещение слишком мало для колониста") проходит: «Комната» стоит в начале строки и именем собственным не считается
+			{
+				string r48;
+				bool ok48 = PlaceholderGuard.Validate("Комната слишком мала for the colonist", "Помещение слишком мало для колониста", out r48);
+				sb.AppendLine((ok48 ? "[OK]" : "[FAIL]") + " 48. Sentence start capitalized word not treated as proper noun -> " + ok48);
+			}
+
+			// 49. Validate("Отряд от Племя Бардал идёт к вам", "Группа от Племени Бардал идёт к вам") проходит: «Отряд» в начале строки, «Племя» и «Бардал» сохранены по основе
+			{
+				string r49;
+				bool ok49 = PlaceholderGuard.Validate("Отряд от Племя Бардал идёт к вам", "Группа от Племени Бардал идёт к вам", out r49);
+				sb.AppendLine((ok49 ? "[OK]" : "[FAIL]") + " 49. Stems matching with inflected words and sentence start word -> " + ok49);
+			}
+
+			// 50. Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в Утёсе Преданности") проходит: оба имени сохранены в склонённой форме
+			{
+				string r50;
+				bool ok50 = PlaceholderGuard.Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в Утёсе Преданности", out r50);
+				sb.AppendLine((ok50 ? "[OK]" : "[FAIL]") + " 50. Declension of proper names passes -> " + ok50);
+			}
+
+			// 51. Validate("Караван идёт в Утёс Преданности. Преданности ждут гостей.", "Караван идёт в локацию. Локация ждёт гостей.") отклоняется с причиной «русский фрагмент исходника потерян»
+			{
+				string r51;
+				bool ok51 = !PlaceholderGuard.Validate("Караван идёт в Утёс Преданности. Преданности ждут гостей.", "Караван идёт в локацию. Локация ждёт гостей.", out r51) && r51.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok51 ? "[OK]" : "[FAIL]") + " 51. Capitalized words lost later in sentence rejected -> " + ok51);
+			}
+
+			// 52. Validate("Караван идёт в Утёс\nПреданности прямо сейчас", "Караван идёт в Утёсе\nПреданности прямо сейчас") проходит: слова, разделённые переводом строки, разбираются по отдельности
+			{
+				string r52;
+				bool ok52 = PlaceholderGuard.Validate("Караван идёт в Утёс\nПреданности прямо сейчас", "Караван идёт в Утёсе\nПреданности прямо сейчас", out r52);
+				sb.AppendLine((ok52 ? "[OK]" : "[FAIL]") + " 52. Multi-word phrase with newline separator passes -> " + ok52);
+			}
+
 			GATLog.Msg(sb.ToString());
 		}
 	}

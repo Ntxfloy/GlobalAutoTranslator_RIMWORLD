@@ -63,7 +63,7 @@ namespace GlobalAutoTranslator
 					}
 
 					var parsed = MiniJson.ParseFlatObject(content);
-					if (parsed.Count == 0)
+					if (parsed == null || parsed.Count == 0)
 					{
 						GATLog.Warn("Не удалось разобрать JSON модели: " + Trim(content, 800));
 						return null;

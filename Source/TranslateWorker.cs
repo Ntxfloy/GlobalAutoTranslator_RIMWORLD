@@ -496,7 +496,7 @@ namespace GlobalAutoTranslator
 
 			if (result.Success)
 			{
-				// УСПЕХ
+				bool wasPaused = Paused;
 				Paused = false;
 				Interlocked.Exchange(ref nextProbeUtc, 0);
 				Interlocked.Exchange(ref consecutiveFailedBatches, 0);
@@ -504,7 +504,11 @@ namespace GlobalAutoTranslator
 				Volatile.Write(ref lastProbeError, null);
 				Interlocked.Exchange(ref lastProbeSuccessUtc, DateTime.UtcNow.Ticks);
 
-				GATLog.Msg("ИИ снова доступен. Перевод автоматически продолжен. В очереди: " + Pending + ".");
+				if (wasPaused)
+					GATLog.Msg("ИИ снова доступен. Перевод автоматически продолжен. В очереди: " + Pending + ".");
+				else
+					GATLog.Msg("Проверка соединения успешна.");
+
 				return "OK: " + result.ResponsePreview;
 			}
 			else

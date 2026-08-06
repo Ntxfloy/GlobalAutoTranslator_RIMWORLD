@@ -18,6 +18,83 @@ namespace GlobalAutoTranslator
 			@"\[\[[^\]]*\]\]|\{[^{}]*\}|<[^<>]+>|\[[^\[\]]+\]|\\n",
 			RegexOptions.Compiled);
 
+		public struct PlaceholderMatch
+		{
+			public int Index;
+			public int Length;
+			public string Value;
+		}
+
+		public static List<PlaceholderMatch> GetPlaceholderMatches(string s)
+		{
+			var list = new List<PlaceholderMatch>();
+			if (string.IsNullOrEmpty(s)) return list;
+
+			int lookupIdx = s.IndexOf("{lookup:", StringComparison.OrdinalIgnoreCase);
+			if (lookupIdx < 0)
+			{
+				foreach (Match m in Ph.Matches(s))
+				{
+					list.Add(new PlaceholderMatch { Index = m.Index, Length = m.Length, Value = m.Value });
+				}
+				return list;
+			}
+
+			int i = 0;
+			while (i < s.Length)
+			{
+				int nextLookup = s.IndexOf("{lookup:", i, StringComparison.OrdinalIgnoreCase);
+
+				// Распознаём конструкцию {lookup: ...} со сбалансированным подсчётом скобок
+				if (nextLookup == i)
+				{
+					int braceCount = 1;
+					int j = i + 8;
+					while (j < s.Length && braceCount > 0)
+					{
+						if (s[j] == '{') braceCount++;
+						else if (s[j] == '}') braceCount--;
+						j++;
+					}
+					if (braceCount == 0)
+					{
+						int len = j - i;
+						list.Add(new PlaceholderMatch { Index = i, Length = len, Value = s.Substring(i, len) });
+						i = j;
+						continue;
+					}
+					else
+					{
+						// Незакрытая скобка — конструкцию {lookup: не считаем плейсхолдером и идём дальше
+						i += 8;
+						continue;
+					}
+				}
+
+				Match m = Ph.Match(s, i);
+				if (m.Success && (nextLookup < 0 || m.Index <= nextLookup))
+				{
+					list.Add(new PlaceholderMatch { Index = m.Index, Length = m.Length, Value = m.Value });
+					i = m.Index + m.Length;
+					continue;
+				}
+
+				if (nextLookup >= 0)
+				{
+					i = nextLookup;
+				}
+				else if (m.Success)
+				{
+					i = m.Index;
+				}
+				else
+				{
+					break;
+				}
+			}
+			return list;
+		}
+
 		public enum ScriptKind { None, Cyrillic, Latin, Cjk, Other }
 
 		/// <summary>К какой письменности относится один символ.</summary>
@@ -58,7 +135,7 @@ namespace GlobalAutoTranslator
 			cyr = 0; lat = 0; cjk = 0; other = 0;
 			if (string.IsNullOrEmpty(s)) return;
 
-			string clean = Ph.Replace(s, " ");
+			string clean = StripTagsAndPlaceholders(s);
 			for (int i = 0; i < clean.Length; i++)
 			{
 				switch (ClassifyChar(clean[i]))
@@ -93,7 +170,7 @@ namespace GlobalAutoTranslator
 		{
 			var list = new List<string>();
 			if (string.IsNullOrEmpty(s)) return list;
-			foreach (Match m in Ph.Matches(s))
+			foreach (var m in GetPlaceholderMatches(s))
 			{
 				string val = m.Value;
 				if (val.StartsWith("{") && val.EndsWith("}") && val.Contains("?"))
@@ -185,7 +262,41 @@ namespace GlobalAutoTranslator
 		public static string StripTagsAndPlaceholders(string s)
 		{
 			if (string.IsNullOrEmpty(s)) return string.Empty;
-			return TagRegex.Replace(s, " ");
+			if (s.IndexOf("{lookup:", StringComparison.OrdinalIgnoreCase) < 0)
+			{
+				return TagRegex.Replace(s, " ");
+			}
+			var matches = GetPlaceholderMatches(s);
+			if (matches.Count == 0) return TagRegex.Replace(s, " ");
+
+			var sb = new StringBuilder(s.Length);
+			int prev = 0;
+			foreach (var m in matches)
+			{
+				sb.Append(s, prev, m.Index - prev).Append(' ');
+				prev = m.Index + m.Length;
+			}
+			sb.Append(s, prev, s.Length - prev);
+			return TagRegex.Replace(sb.ToString(), " ");
+		}
+
+		private static readonly HashSet<string> CommonServiceWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			"Изготавливает", "Делает", "Создает", "Создаёт", "Постройка", "Любые", "Патроны", "Требуется", "Каждый", "Каждая", "Каждое", "Снаряды", "Рецепт", "Сборка",
+			"для", "в", "во", "и", "с", "со", "на", "от", "из", "по", "к", "ко", "у", "о", "об", "за", "до", "при", "над", "под", "а", "но", "или", "не", "же", "ли", "что", "как", "это"
+		};
+
+		private static bool IsAtStartOfSentence(string s, int index)
+		{
+			if (index == 0) return true;
+			int p = index - 1;
+			while (p >= 0 && char.IsWhiteSpace(s[p]))
+			{
+				p--;
+			}
+			if (p < 0) return true;
+			char c = s[p];
+			return c == '.' || c == '!' || c == '?' || c == ':' || c == ';' || c == '\r' || c == '\n';
 		}
 
 		public static Dictionary<string, int> ExtractCyrillicFragments(string s)
@@ -193,14 +304,53 @@ namespace GlobalAutoTranslator
 			var map = new Dictionary<string, int>(StringComparer.Ordinal);
 			if (string.IsNullOrEmpty(s)) return map;
 
-			var matches = Regex.Matches(s, @"[\u0400-\u052F]{4,}");
-			foreach (Match m in matches)
+			// 1. Поиск многословных кириллических фраз (минимум 2 слова подряд)
+			var multiMatches = Regex.Matches(s, @"[\u0400-\u052F]+(?:\s+[\u0400-\u052F]+)+");
+			foreach (Match m in multiMatches)
 			{
 				string val = m.Value;
-				int count;
-				map.TryGetValue(val, out count);
-				map[val] = count + 1;
+				int wordStartIdx = m.Index;
+				string[] words = val.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+
+				foreach (string w in words)
+				{
+					int wIdx = s.IndexOf(w, wordStartIdx, StringComparison.Ordinal);
+					if (wIdx >= 0)
+					{
+						wordStartIdx = wIdx + w.Length;
+
+						if (w.Length >= 4 && char.IsUpper(w[0]) && !CommonServiceWords.Contains(w))
+						{
+							if (!IsAtStartOfSentence(s, wIdx))
+							{
+								int count;
+								map.TryGetValue(w, out count);
+								map[w] = count + 1;
+							}
+						}
+					}
+				}
 			}
+
+			// 2. Одиночные имена собственные: одно слово >= 6 символов, начинающееся с заглавной буквы, не входящее в служебные слова
+			var singleMatches = Regex.Matches(s, @"[\u0400-\u052F]{6,}");
+			foreach (Match m in singleMatches)
+			{
+				string val = m.Value;
+				if (char.IsUpper(val[0]) && !CommonServiceWords.Contains(val))
+				{
+					if (!IsAtStartOfSentence(s, m.Index))
+					{
+						if (!map.ContainsKey(val))
+						{
+							int count;
+							map.TryGetValue(val, out count);
+							map[val] = count + 1;
+						}
+					}
+				}
+			}
+
 			return map;
 		}
 
@@ -244,7 +394,7 @@ namespace GlobalAutoTranslator
 				return false;
 			}
 
-			// Проверка сохранения русских фрагментов из исходника с помощью регистрозависимого CountOccurrencesOrdinal
+			// Проверка сохранения русских фрагментов по основе слова (Rule 6)
 			var srcCyrFrags = ExtractCyrillicFragments(src);
 			if (srcCyrFrags.Count > 0)
 			{
@@ -252,7 +402,14 @@ namespace GlobalAutoTranslator
 				{
 					string frag = kv.Key;
 					int srcCount = kv.Value;
-					int dstCount = CountOccurrencesOrdinal(dst, frag);
+
+					string searchPattern = frag;
+					if (frag.Length >= 5)
+					{
+						searchPattern = frag.Substring(0, frag.Length - 2);
+					}
+
+					int dstCount = CountOccurrencesOrdinal(dst, searchPattern);
 					if (dstCount < srcCount)
 					{
 						reason = "русский фрагмент исходника потерян";
@@ -357,13 +514,13 @@ namespace GlobalAutoTranslator
 			map = new Dictionary<int, string>();
 			if (string.IsNullOrEmpty(src)) return src;
 
-			var matches = Ph.Matches(src);
+			var matches = GetPlaceholderMatches(src);
 			if (matches.Count == 0) return src;
 
 			var sb = new StringBuilder(src.Length);
 			int idx = 1;
 			int prev = 0;
-			foreach (Match m in matches)
+			foreach (var m in matches)
 			{
 				string val = m.Value;
 				// Гендерные конструкции вида {PAWN_gender ? attacked : attacked} НЕ маскируем
