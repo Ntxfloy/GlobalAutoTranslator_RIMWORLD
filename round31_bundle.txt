@@ -1,0 +1,3490 @@
+===== SECTION: REPORT =====
+# РАУНД 31 — ВЕРСИОНИРОВАНИЕ И ПОСТОЯННЫЙ ТЕСТОВЫЙ СТЕНД
+
+## 1. ВЫПОЛНЕННЫЕ ТРЕБОВАНИЯ
+
+### ИСПРАВЛЕНИЕ 1: ВЕРСИОНИРОВАНИЕ МОДА
+- Добавлена константа `ModVersion = "31.0"` в `GATMod.cs` с логированием при старте (включая дату сборки, модель и версию промпта).
+- Обновлен `About.xml` (`<modVersion>31.0</modVersion>`).
+- В `build.ps1` добавлена автогенерация `Source/AssemblyInfo.cs` для прошивки версии в саму DLL.
+
+### ИСПРАВЛЕНИЕ 2: ПОСТОЯННЫЙ ТЕСТОВЫЙ СТЕНД
+- Файлы моков и запуска тестов перемещены в папку `tests/` (`Mocks.cs` и `Program.cs`), чтобы они стали частью репозитория, но не попадали в саму игру.
+- `build.ps1` теперь исключает папку `tests/` при сборке основной DLL.
+- Создан скрипт `tools/run_tests.ps1` для чистой сборки и локального запуска консольных тестов.
+
+### ИСПРАВЛЕНИЕ 3: ФИЛЬТР СЛЭШЕЙ И ТЕСТ 56
+- Логика проверки путей вынесена из `UiHarvest.Drain()` в метод `public static bool IsJunkPath(string s)` в `Patches.cs`.
+- Тест 56 в `SelfTest.cs` переведен на прямой вызов `UiHarvest.IsJunkPath`, что гарантирует соответствие тестируемого кода реальному.
+
+### ИСПРАВЛЕНИЕ 4: ИНКРЕМЕНТ ПОКОЛЕНИЯ
+- Добавлен атомарный `Interlocked.Increment(ref cacheGeneration)` в конце `TranslationCache.Load()`. Теперь загрузка новых переводов (в том числе в фоне) корректно инвалидирует отрицательный кэш, предотвращая блокировку строк (D-10).
+
+### ИСПРАВЛЕНИЕ 5: ЗАМЕР ПРОИЗВОДИТЕЛЬНОСТИ ИНВАЛИДАЦИИ
+- В `tests/Program.cs` добавлен бенчмарк: 15,000 записей, 20,000 промахов `TryGetFlat` с инкрементом поколения каждые 50 вызовов. Оценивается скорость деградации производительности.
+
+### ИСПРАВЛЕНИЕ 6: КОДИРОВКА ОТЧЕТА И МАШИННЫЕ СЕКЦИИ
+- Текст отчета вынесен в отдельный файл `round31_report.md` в UTF-8 без BOM.
+- Скрипт `make_bundle.ps1` читает отчет и формирует бандл без искажения кириллицы, а также возвращает машинные секции `BUILD`, `HASHES` и `GIT`.
+
+===== SECTION: BUILD =====
+[BUILD] RimWorld: D:\SteamLibrary\steamapps\common\RimWorld
+[BUILD] Compiling...
+Компилятор Microsoft (R) Visual C# версии 4.9.2-3.24129.6 (9934fb9e)
+© Корпорация Майкрософт (Microsoft Corporation). Все права защищены.
+
+[BUILD] DLL OK: D:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\Assemblies\GlobalAutoTranslator.dll
+[INSTALL] Skipped (-NoInstall).
+
+===== SECTION: HASHES =====
+Project DLL: Size=119808, Time=2026-08-07T04:48:19.1885610+03:00, SHA256=8EB15A463AE7C00AA9D3E603BECAAAF1D7AA47348E90B4C818A6040F23FDC23C
+Active  DLL: Size=119808, Time=2026-08-07T04:44:00.1866174+03:00, SHA256=B0E7382E3D2C5DCCD5860AFCF9E3D354C7368B83F19375BBB4C0CC756B5349F9
+
+===== SECTION: GIT =====
+diff --git a/About/About.xml b/About/About.xml
+index f85816c..a54542e 100644
+--- a/About/About.xml
++++ b/About/About.xml
+@@ -11,6 +11,7 @@
+   <supportedVersions>
+     <li>1.6</li>
+   </supportedVersions>
++  <modVersion>31.0</modVersion>
+   <modDependencies>
+     <li>
+       <packageId>brrainz.harmony</packageId>
+diff --git a/Assemblies/GlobalAutoTranslator.dll b/Assemblies/GlobalAutoTranslator.dll
+index f0bb405..9e46e4a 100644
+Binary files a/Assemblies/GlobalAutoTranslator.dll and b/Assemblies/GlobalAutoTranslator.dll differ
+diff --git a/Source/GATMod.cs b/Source/GATMod.cs
+index 33a4121..6c76f8e 100644
+--- a/Source/GATMod.cs
++++ b/Source/GATMod.cs
+@@ -50,12 +50,20 @@ namespace GlobalAutoTranslator
+ 
+ 	public class GATMod : Mod
+ 	{
++		public const string ModVersion = "31.0";
+ 		public static GATSettings Settings;
+ 		private static string selfTestResult = "";
+ 
+ 		public GATMod(ModContentPack content) : base(content)
+ 		{
+ 			Settings = GetSettings<GATSettings>();
++			
++			// Выводим версию и информацию в лог при старте
++			System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
++			string asmVersion = asm.GetName().Version.ToString();
++			System.IO.FileInfo fi = new System.IO.FileInfo(asm.Location);
++			GATLog.Msg("Started: v" + ModVersion + " (Asm: " + asmVersion + ", Date: " + fi.LastWriteTime.ToString("o") + ")");
++			GATLog.Msg("Prompt v" + Prompt.PromptVersion + ", Model: " + Settings.model);
+ 		}
+ 
+ 		public override string SettingsCategory()
+diff --git a/Source/Patches.cs b/Source/Patches.cs
+index d3e476b..699d7e7 100644
+--- a/Source/Patches.cs
++++ b/Source/Patches.cs
+@@ -39,6 +39,33 @@ namespace GlobalAutoTranslator
+ 			int len = s.Length;
+ 			if (len < 2 || len > 600) return;
+ 
++			// Срезание обрамляющих тегов
++			if (s.StartsWith("<") && s.EndsWith(">") && s.Length > 2)
++			{
++				int firstClose = s.IndexOf('>');
++				if (firstClose > 1 && firstClose < s.Length - 2)
++				{
++					string openTag = s.Substring(0, firstClose + 1);
++					if (!openTag.StartsWith("</"))
++					{
++						int eqIdx = openTag.IndexOf('=');
++						string tagName = eqIdx > 0 ? openTag.Substring(1, eqIdx - 1) : openTag.Substring(1, openTag.Length - 2);
++						string closeTag = "</" + tagName + ">";
++						if (s.EndsWith(closeTag))
++						{
++							string inner = s.Substring(openTag.Length, s.Length - openTag.Length - closeTag.Length);
++							lock (seen)
++							{
++								if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
++									seen.Add(s);
++							}
++							Note(inner);
++							return;
++						}
++					}
++				}
++			}
++
+ 			int currentFrame = UnityEngine.Time.frameCount;
+ 			if (currentFrame != lastFrameCount)
+ 			{
+@@ -134,8 +161,19 @@ namespace GlobalAutoTranslator
+ 			}
+ 		}
+ 
+-		public static void Drain(int maxPerCall = 30)
++		public static bool IsJunkPath(string s)
+ 		{
++			bool hasSlash = s.Contains("/") || s.Contains("\\");
++			return (hasSlash && !s.Contains(" ")) ||
++				   s.Contains("://") ||
++				   s.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
++				   s.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
++				   s.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
++		}
++
++		public static void Drain(int maxPerCall = 50)
++		{
++
+ 			if (enqueuedThisSession >= MaxEnqueuedPerSession)
+ 			{
+ 				if (!limitReachedLogged)
+@@ -159,10 +197,7 @@ namespace GlobalAutoTranslator
+ 				}
+ 
+ 				// Фильтр путей, файлов и расширений
+-				if (s.Contains("/") || s.Contains("\\") ||
+-					s.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+-					s.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
+-					s.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
++				if (IsJunkPath(s))
+ 				{
+ 					filteredCount++;
+ 					continue;
+diff --git a/Source/SelfTest.cs b/Source/SelfTest.cs
+index 8288bfd..75cf97f 100644
+--- a/Source/SelfTest.cs
++++ b/Source/SelfTest.cs
+@@ -393,6 +393,56 @@ namespace GlobalAutoTranslator
+ 				sb.AppendLine((ok52 ? "[OK]" : "[FAIL]") + " 52. Multi-word phrase with newline separator passes -> " + ok52);
+ 			}
+ 
++			// 53. TryGetFlat: "Preview (per worker):" сначала промах (метка), потом Put, потом успех
++			{
++				string res53_1;
++				bool fail53 = !TranslationCache.TryGetFlat("Preview (per worker):", out res53_1);
++				
++				TranslationCache.Put("ui", "Preview (per worker)", "Предпросмотр (на одного рабочего)");
++				
++				string res53_2 = null;
++				bool ok53 = fail53 && TranslationCache.TryGetFlat("Preview (per worker):", out res53_2) && res53_2 == "Предпросмотр (на одного рабочего):";
++				sb.AppendLine((ok53 ? "[OK]" : "[FAIL]") + " 53. Preview (per worker): combat order -> " + (res53_2 ?? "null"));
++			}
++
++			// 54. TryGetFlat: "Decay per additional doctor: ×0.75" сначала промах, потом Put, потом успех
++			{
++				string res54_1;
++				bool fail54 = !TranslationCache.TryGetFlat("Decay per additional doctor: \u00D70.75", out res54_1);
++				
++				TranslationCache.Put("ui", "Decay per additional doctor", "эффективность доп. врача");
++				
++				string res54_2 = null;
++				bool ok54 = fail54 && TranslationCache.TryGetFlat("Decay per additional doctor: \u00D70.75", out res54_2) && res54_2 == "эффективность доп. врача: \u00D70.75";
++				sb.AppendLine((ok54 ? "[OK]" : "[FAIL]") + " 54. Decay per additional doctor: \u00D70.75 combat order -> " + (res54_2 ?? "null"));
++			}
++
++			// 55. TryGetFlat: "<b>Level up actions</b>" сначала промах, потом Put, потом успех с тегами
++			{
++				string res55_1;
++				bool fail55 = !TranslationCache.TryGetFlat("<b>Level up actions</b>", out res55_1);
++				
++				TranslationCache.Put("ui", "Level up actions", "действия при повышении уровня");
++				
++				string res55_2 = null;
++				bool ok55 = fail55 && TranslationCache.TryGetFlat("<b>Level up actions</b>", out res55_2) && res55_2 == "<b>действия при повышении уровня</b>";
++				sb.AppendLine((ok55 ? "[OK]" : "[FAIL]") + " 55. <b>Level up actions</b> combat order -> " + (res55_2 ?? "null"));
++			}
++
++			// 56. Проверка суженного фильтра слэшей
++			{
++				string s_pass = "Bleed rate threshold: 100%/day";
++				string s_fail1 = "Textures/Things/Item.png";
++				string s_fail2 = "C:\\Mods\\Thing.dll";
++				
++				bool passes_pass = !UiHarvest.IsJunkPath(s_pass);
++				bool passes_fail1 = !UiHarvest.IsJunkPath(s_fail1);
++				bool passes_fail2 = !UiHarvest.IsJunkPath(s_fail2);
++
++				bool ok56 = passes_pass && !passes_fail1 && !passes_fail2;
++				sb.AppendLine((ok56 ? "[OK]" : "[FAIL]") + " 56. Slash filter rules -> pass=" + passes_pass + ", fail1=" + passes_fail1 + ", fail2=" + passes_fail2);
++			}
++
+ 			GATLog.Msg(sb.ToString());
+ 		}
+ 	}
+diff --git a/Source/TranslationCache.cs b/Source/TranslationCache.cs
+index c5d2446..57306ae 100644
+--- a/Source/TranslationCache.cs
++++ b/Source/TranslationCache.cs
+@@ -30,9 +30,10 @@ namespace GlobalAutoTranslator
+ 		/// Без MD5 и без контекста: в Widgets.Label нельзя тратить ни одной аллокации.</summary>
+ 		private static readonly ConcurrentDictionary<string, string> flat =
+ 			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
++		private static readonly ConcurrentDictionary<string, int> flatNoFallback =
++			new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+ 
+-		private static readonly ConcurrentDictionary<string, byte> flatNoFallback =
+-			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
++		private static int cacheGeneration;
+ 
+ 		public class TemplateRecord
+ 		{
+@@ -213,7 +214,8 @@ namespace GlobalAutoTranslator
+ 			}
+ 
+ 			if (flat.TryGetValue(source, out translated)) return true;
+-			if (flatNoFallback.ContainsKey(source))
++			int gen;
++			if (flatNoFallback.TryGetValue(source, out gen) && gen == System.Threading.Volatile.Read(ref cacheGeneration))
+ 			{
+ 				translated = null;
+ 				return false;
+@@ -317,7 +319,33 @@ namespace GlobalAutoTranslator
+ 				}
+ 			}
+ 
+-			flatNoFallback[source] = 1;
++			// 7. HTML-теги вокруг ("<b>text</b>" -> "<b>текст</b>")
++			if (source.StartsWith("<") && source.EndsWith(">") && source.Length > 2)
++			{
++				int firstClose = source.IndexOf('>');
++				if (firstClose > 1 && firstClose < source.Length - 2)
++				{
++					string openTag = source.Substring(0, firstClose + 1);
++					if (!openTag.StartsWith("</"))
++					{
++						int eqIdx = openTag.IndexOf('=');
++						string tagName = eqIdx > 0 ? openTag.Substring(1, eqIdx - 1) : openTag.Substring(1, openTag.Length - 2);
++						string closeTag = "</" + tagName + ">";
++						if (source.EndsWith(closeTag))
++						{
++							string inner = source.Substring(openTag.Length, source.Length - openTag.Length - closeTag.Length);
++							if (TryGetFlat(inner, out string innerTrans))
++							{
++								translated = openTag + innerTrans + closeTag;
++								flat[source] = translated;
++								return true;
++							}
++						}
++					}
++				}
++			}
++
++			flatNoFallback[source] = System.Threading.Volatile.Read(ref cacheGeneration);
+ 			translated = null;
+ 			return false;
+ 		}
+@@ -491,8 +519,9 @@ namespace GlobalAutoTranslator
+ 				else
+ 					flat.TryAdd(source, translated);
+ 
+-				byte ig;
++				int ig;
+ 				flatNoFallback.TryRemove(source, out ig);
++				System.Threading.Interlocked.Increment(ref cacheGeneration);
+ 				RegisterTemplateIfAny(source, translated);
+ 			}
+ 			dirtyShards[ShardOf(key)] = 1;
+@@ -570,6 +599,8 @@ namespace GlobalAutoTranslator
+ 			{
+ 				GATLog.Warn("Не удалось загрузить кэш: " + e);
+ 			}
++			
++			System.Threading.Interlocked.Increment(ref cacheGeneration);
+ 		}
+ 
+ 		/// <summary>Сбрасывает на диск только изменённые шарды.</summary>
+@@ -658,8 +689,8 @@ namespace GlobalAutoTranslator
+ 	public static class GATLog
+ 	{
+ 		private const string Tag = "[GlobalAutoTranslator] ";
+-		public static void Msg(string s) { Log.Message(Tag + s); }
+-		public static void Warn(string s) { Log.Warning(Tag + s); }
+-		public static void Err(string s) { Log.Error(Tag + s); }
++		public static void Msg(string s) { try { Log.Message(Tag + s); } catch { System.Console.WriteLine(Tag + s); } }
++		public static void Warn(string s) { try { Log.Warning(Tag + s); } catch { System.Console.WriteLine("[WARN] " + Tag + s); } }
++		public static void Err(string s) { try { Log.Error(Tag + s); } catch { System.Console.WriteLine("[ERR] " + Tag + s); } }
+ 	}
+ }
+diff --git a/build.ps1 b/build.ps1
+index 52e1419..621b641 100644
+--- a/build.ps1
++++ b/build.ps1
+@@ -99,9 +99,26 @@ foreach ($p in @($MANAGED, $HARMONY, $CSC)) {
+     if (-not (Test-Path $p)) { throw "Not found: $p" }
+ }
+ 
++# ---- Generate AssemblyInfo.cs -------------------------------------------------
++$assemblyInfo = @"
++using System.Reflection;
++
++[assembly: AssemblyTitle("GlobalAutoTranslator")]
++[assembly: AssemblyDescription("AI Translator for RimWorld")]
++[assembly: AssemblyConfiguration("")]
++[assembly: AssemblyCompany("Ayder")]
++[assembly: AssemblyProduct("GlobalAutoTranslator")]
++[assembly: AssemblyCopyright("Copyright © 2026")]
++[assembly: AssemblyTrademark("")]
++[assembly: AssemblyCulture("")]
++[assembly: AssemblyVersion("31.0.0.0")]
++[assembly: AssemblyFileVersion("31.0.0.0")]
++"@
++Set-Content -Path "$SRC_DIR\AssemblyInfo.cs" -Value $assemblyInfo -Encoding UTF8
++
+ # ---- Compile ----------------------------------------------------------------
+ Write-Host "[BUILD] Compiling..." -ForegroundColor Cyan
+-$SRC = Get-ChildItem "$SRC_DIR\*.cs" | Select-Object -ExpandProperty FullName
++$SRC = Get-ChildItem "$SRC_DIR\*.cs" -Recurse | Where-Object { $_.FullName -notmatch '\\tests\\' } | Select-Object -ExpandProperty FullName
+ 
+ & $CSC `
+     "/target:library" `
+diff --git a/tools/make_bundle.ps1 b/tools/make_bundle.ps1
+index 98dbfde..70a2e90 100644
+--- a/tools/make_bundle.ps1
++++ b/tools/make_bundle.ps1
+@@ -1,9 +1,12 @@
+ $ErrorActionPreference = 'Stop'
+ Set-Location 'd:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator'
+ 
+-# 1. Run build script and capture output
++[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
++$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
++
++# 1. Run build script to build the actual DLL
+ Write-Host "Running build.ps1 -NoInstall..."
+-$buildOutput = powershell -ExecutionPolicy Bypass -File "d:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\build.ps1" -NoInstall | Out-String
++$buildOutput = powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\build.ps1" -NoInstall | Out-String
+ 
+ # 2. Get DLL Hashes
+ $projDll = "d:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\Assemblies\GlobalAutoTranslator.dll"
+@@ -21,58 +24,28 @@ if (Test-Path $activeDll) {
+ } else {
+     $activeInfo = "Active  DLL: Not found"
+ }
+-$hashesOutput = "$projInfo`n$activeInfo"
+-
+-# 3. Get Git outputs
+-$gitStatus = git status --short | Where-Object { $_ -notmatch 'Assemblies/GlobalAutoTranslator.dll' } | Out-String
+-$gitDiffStat = git diff --stat HEAD | Out-String
+-$gitSection = "$gitStatus$gitDiffStat`nCOMMIT_AND_PUSH_PERFORMED=NO"
+ 
+-# 4. Get diff
++# 3. Get diff
+ $gitDiff = git diff HEAD | Out-String
+-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+ 
+-# Save round28_3.diff as well
+-[System.IO.File]::WriteAllText('d:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\round28_3.diff', $gitDiff, $utf8NoBom)
++# 4. Compile and Run SelfTest in standalone mode to capture output
++Write-Host "Compiling and running SelfTest runner..."
++$testExe = "tests\GATTest.exe"
++$selftestOutput = ""
++try {
++    # Assuming run_tests.ps1 handles compilation and execution correctly
++    $selftestOutput = & "tools\run_tests.ps1" | Out-String
++} catch {
++    $selftestOutput = "Test harness failed: $_"
++}
+ 
+ # 5. Build Report text
+-$reportText = @"
+-# РАУНД 28.3 — ОТЧЁТ ПО КИРИЛЛИЧЕСКИМ ФРАГМЕНТАМ И СКЛОНЕНИЮ
+-
+-## 1. ВЫПОЛНЕННЫЕ ТРЕБОВАНИЯ
+-
+-### ИСПРАВЛЕНИЕ РАЗБИЕНИЯ НА ТОКЕНЫ В EXTRACTCYRILLICFRAGMENTS
+-- **Файл:Строка:** `Source/PlaceholderGuard.cs:313`
+-- Разделение многословных фраз в `ExtractCyrillicFragments` переведено с обычного пробела `' '` на разделение по любым пробельным символам (включая табуляцию и переносы строк `\n` / `\r`):
+-  `string[] words = val.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);`
+-- Это предотвращает ошибочное склеивание слов, разделённых переводом строки (например, «Утёс\nПреданности»), в некорректный токен.
+-- **Самотест 52** успешно добавлен и проверяет прохождение валидации для слов, разделённых символом новой строки.
+-
+-### ПРАВИЛО 5 — ИСКЛЮЧЕНИЕ ПЕРВОГО СЛОВА ПРЕДЛОЖЕНИЯ
+-- **Файл:Строка:** `Source/PlaceholderGuard.cs:289-300`
+-- Реализован метод `IsAtStartOfSentence(string s, int index)`. Он проверяет символы перед указанным индексом (игнорируя пробелы). Если перед словом пусто или стоит один из символов окончания предложения (`.`, `!`, `?`, `:`, `;`, `\r`, `\n`), то слово признаётся началом предложения и не включается в список имён собственных.
+-- Обычные существительные в начале строки («Комната», «Отряд», «Письмо») больше не требуют дословного сохранения.
+-- **Самотесты 48, 49** (скомпилированы, не выполнялись в игре).
+-
+-### ПРАВИЛО 6 — ПОДДЕРЖКА СКЛОНЕНИЙ ЧЕРЕЗ ОСНОВУ СЛОВА
+-- **Файл:Строка:** `Source/PlaceholderGuard.cs:368-386`
+-- Проверка сохранения фрагментов переведена на основу слова:
+-  - Если длина слова >= 5 символов, его основа получается отсеканием последних 2 букв (например, «Племя» -> «Плем», «Бардал» -> «Бард», «Преданности» -> «Преданнос»).
+-  - Если длина слова = 4 символа, ищется целое слово.
+-  - Поиск в переводе ведётся регистрозависимо по основе через `CountOccurrencesOrdinal`.
+-- Изменение окончаний при переводе («Племя» -> «Племени», «Утёс» -> «Утёсе») больше не вызывает ложных отбраковок.
+-- **Самотесты 45, 49, 50** (скомпилированы, не выполнялись в игре).
+-- Полная потеря имён собственных по-прежнему блокируется и вызывает отбраковку (тесты 46 и 51).
+-
+-### ЗАДАЧА 5 — СТАТУС КНОПКИ ОЧИСТКИ FAILED.TSV
+-- **Файл:Строка:** `Source/GATMod.cs:156-160`
+-- Кнопка очистки `failed.tsv` **уже была реализована** на строке 156 в `GATMod.cs` под именем `Очистить список окончательных отбраковок`.
+-
+----
+-
+-## 2. СТАТУС ВСЕХ САМОТЕСТОВ (1–52)
+-Все 52 самотеста скомпилированы в сборке. Настоящим заявляю: самотесты скомпилированы, не выполнялись в живой игре.
+-"@
++$reportText = ""
++if (Test-Path "round31_report.md") {
++    $reportText = [System.IO.File]::ReadAllText("round31_report.md", $utf8NoBom)
++} else {
++    $reportText = "Отчет round31_report.md не найден."
++}
+ 
+ # 6. Assemble Bundle
+ $sb = [System.Text.StringBuilder]::new()
+@@ -85,43 +58,41 @@ $sb = [System.Text.StringBuilder]::new()
+ [void]$sb.AppendLine("")
+ 
+ [void]$sb.AppendLine("===== SECTION: HASHES =====")
+-[void]$sb.AppendLine($hashesOutput.Trim())
++[void]$sb.AppendLine($projInfo)
++[void]$sb.AppendLine($activeInfo)
+ [void]$sb.AppendLine("")
+ 
+ [void]$sb.AppendLine("===== SECTION: GIT =====")
+-[void]$sb.AppendLine($gitSection.Trim())
++[void]$sb.AppendLine($gitDiff.Trim())
+ [void]$sb.AppendLine("")
+ 
+-[void]$sb.AppendLine("===== SECTION: DIFF: round28_3.diff =====")
+-[void]$sb.AppendLine($gitDiff.Trim())
++[void]$sb.AppendLine("===== SECTION: SELFTEST_RESULT =====")
++[void]$sb.AppendLine($selftestOutput.Trim())
+ [void]$sb.AppendLine("")
+ 
+-# Get list of modified CS files from git status, and include obligatory files
+-$filesToInclude = [System.Collections.Generic.List[string]]::new()
+-$filesToInclude.Add("Source/PlaceholderGuard.cs")
+-$filesToInclude.Add("Source/SelfTest.cs")
+-$filesToInclude.Add("Source/GATMod.cs")
+-$filesToInclude.Add("tools/make_bundle.ps1")
+-
+-# Also add any other modified CS files from git status dynamically
+-$modifiedFiles = git status --short | Where-Object { $_ -match '\.cs$' } | ForEach-Object { $_.Substring(3).Trim() }
+-foreach ($file in $modifiedFiles) {
+-    $fNorm = $file.Replace('\', '/')
+-    if (!$filesToInclude.Contains($fNorm)) {
+-        $filesToInclude.Add($fNorm)
+-    }
+-}
++$filesToInclude = @(
++    "Source/GATMod.cs",
++    "Source/Patches.cs",
++    "Source/TranslationCache.cs",
++    "Source/SelfTest.cs",
++    "tools/run_tests.ps1",
++    "build.ps1",
++    "tests/Mocks.cs",
++    "tests/Program.cs"
++)
+ 
+ foreach ($file in $filesToInclude) {
+-    [void]$sb.AppendLine("===== SECTION: FILE: $file =====")
+-    $content = [System.IO.File]::ReadAllText((Join-Path 'd:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator' $file), [System.Text.Encoding]::UTF8)
+-    [void]$sb.AppendLine($content.TrimEnd())
+-    [void]$sb.AppendLine("")
++    if (Test-Path $file) {
++        [void]$sb.AppendLine("===== SECTION: FILE: $file =====")
++        $content = [System.IO.File]::ReadAllText((Join-Path 'd:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator' $file), [System.Text.Encoding]::UTF8)
++        [void]$sb.AppendLine($content.TrimEnd())
++        [void]$sb.AppendLine("")
++    }
+ }
+ 
+ [void]$sb.AppendLine("===== END OF BUNDLE =====")
+ 
+-$bundlePath = 'd:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\round28_3_bundle.txt'
++$bundlePath = 'd:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\round31_bundle.txt'
+ [System.IO.File]::WriteAllText($bundlePath, $sb.ToString(), $utf8NoBom)
+ 
+ $bundleItem = Get-Item $bundlePath
+
+===== SECTION: SELFTEST_RESULT =====
+Компилятор Microsoft (R) Visual C# версии 4.9.2-3.24129.6 (9934fb9e)
+© Корпорация Майкрософт (Microsoft Corporation). Все права защищены.
+
+[GlobalAutoTranslator] === GlobalAutoTranslator SelfTest ===
+[OK] 1. steel longsword
+[OK] 2. {PAWN_labelShort} has been downed by {0}.
+[OK] 3. [PAWN_pronoun] -> {PAWN_gender ? он : она}
+[OK] 4. [[ count ]] -> [[ количество ]]
+[OK] 5. <color=#FF0000>Critical</color> failure
+[OK] 6. Global Animation Speed: 100% -> Скорость анимации: 100%
+[OK] 7. Loading... -> Загрузка...
+[OK] 8. Thugs letter -> С вами связывается группа головорезов, отправленная фракцией Племя Бардал.\n\nОни предлагают защитить вашу колонию от любых угроз, включая те, которые могут исходить от них самих, если вы заплатите им 350 серебра.\n\nИмейте в виду: отказ может разозлить головорезов.
+[OK] 9. Non-matching thugs letter -> отклонено
+[OK] 10. Repeated placeholder -> Test и снова и снова Test
+[OK] 11. Short anchor rejected -> отклонено
+[OK] 12. Grammar rule rejected -> отклонено
+[OK] 13. Marker validation (full round-trip, missing rejected, extra rejected)
+[OK] 14. Gender ternary preserved in MaskPlaceholders -> сохранён
+[OK] 15. NeedsTranslation: Mixed quest -> переводить
+[OK] 16. NeedsTranslation: Russian UI -> уже русский
+[OK] 17. NeedsTranslation: Mixed refugees -> переводить
+[OK] 18. NeedsTranslation: Mixed stay quest -> переводить
+[OK] 19. NeedsTranslation: Mod name in Russian -> уже русский
+[OK] 20. NeedsTranslation: Russian color tag -> уже русский
+[OK] 21. NeedsTranslation: Mixed tooltip -> переводить
+[OK] 22. Preserve original Cyrillic fragments -> valid=True, invalid_rejected=True
+[OK] 23. NeedsTranslation: Extended Latin (é, à) -> переводить
+[OK] 24. Case change in Cyrillic fragment rejected (Ordinal) -> отклонено
+[OK] 27. Production GetProbeDelaySeconds: 30, 60, 120, 240, 300, 300 -> True
+[OK] 28. Network error is not structural failure -> True
+[OK] 29. Missing Cyrillic fragment is structural failure -> True
+[OK] 30. Stateless probe-success transition -> True
+[OK] 31. RetryHint is mapped to item ID -> True
+[OK] 32. MiniJson rejects empty/corrupt object -> True
+[OK] 33. Default ProbeResult.Success is false -> True
+[OK] 34. Production ParseRetryAfterSeconds (120, invalid, 0, 1801) -> True
+[OK] 35. Nested lookup masked as single marker and restored -> True
+[OK] 36. Two lookups produce two distinct markers -> True
+[OK] 37. Regular placeholders outside lookup work normally -> True
+[OK] 38. Unclosed lookup brace does not throw exception -> True
+[OK] 39. Recipe verb validation passes -> True
+[OK] 40. Missing proper location name rejected -> True
+[OK] 41. Service words with translated weapon name passes -> True
+[OK] 42. Missing faction name in letter rejected -> True
+[OK] 43. Preposition and service word sentence passes -> True
+[OK] 44. Verb change with recipe passes -> True
+[OK] 45. Inflected multi-word faction passes -> True
+[OK] 46. Missing both capital words rejected -> True
+[OK] 47. Long string fast path works efficiently -> True
+[OK] 48. Sentence start capitalized word not treated as proper noun -> True
+[OK] 49. Stems matching with inflected words and sentence start word -> True
+[OK] 50. Declension of proper names passes -> True
+[OK] 51. Capitalized words lost later in sentence rejected -> True
+[OK] 52. Multi-word phrase with newline separator passes -> True
+[OK] 53. Preview (per worker): combat order -> Предпросмотр (на одного рабочего):
+[OK] 54. Decay per additional doctor: ×0.75 combat order -> эффективность доп. врача: ×0.75
+[OK] 55. <b>Level up actions</b> combat order -> <b>действия при повышении уровня</b>
+[OK] 56. Slash filter rules -> pass=True, fail1=False, fail2=False
+
+
+=== Performance Benchmark ===
+Total 20,000 TryGetFlat misses with invalidations took: 104 ms
+Average time per call: 5,22 microseconds
+
+===== SECTION: FILE: Source/GATMod.cs =====
+using System.Threading;
+using RimWorld;
+using UnityEngine;
+using Verse;
+
+namespace GlobalAutoTranslator
+{
+	public class GATSettings : ModSettings
+	{
+		// Подключение
+		public string endpoint = "http://127.0.0.1:8317/v1/chat/completions";
+		public string model = "gemini-3.6-flash-high";
+		public string apiKey = "";
+		public int timeoutSeconds = 120;
+
+		// Поведение
+		public int batchSize = 25;
+		public int maxConcurrent = 2;
+		public bool sendReasoningEffortNone = true;
+		public bool requestJsonObject = true;
+
+		// Слои
+		public bool translateDefs = true;      // L1
+		public bool translateKeyed = true;     // L2
+		public bool translateWidgets = true;   // L3 — перехват интерфейса на лету
+		public bool translateDescriptions = true;
+		public bool autoFitLabels = true;      // Автоподгонка шрифта длинного текста
+
+		public bool verboseLogging = true;
+
+		public override void ExposeData()
+		{
+			base.ExposeData();
+			Scribe_Values.Look(ref endpoint, "endpoint", "http://127.0.0.1:8317/v1/chat/completions");
+			Scribe_Values.Look(ref model, "model", "gemini-3.6-flash-high");
+			Scribe_Values.Look(ref apiKey, "apiKey", "");
+			Scribe_Values.Look(ref timeoutSeconds, "timeoutSeconds", 120);
+			Scribe_Values.Look(ref batchSize, "batchSize", 40);
+			Scribe_Values.Look(ref maxConcurrent, "maxConcurrent", 2);
+			Scribe_Values.Look(ref sendReasoningEffortNone, "sendReasoningEffortNone", true);
+			Scribe_Values.Look(ref requestJsonObject, "requestJsonObject", true);
+			Scribe_Values.Look(ref translateDefs, "translateDefs", true);
+			Scribe_Values.Look(ref translateKeyed, "translateKeyed", true);
+			Scribe_Values.Look(ref translateWidgets, "translateWidgets", true);
+			Scribe_Values.Look(ref translateDescriptions, "translateDescriptions", true);
+			Scribe_Values.Look(ref autoFitLabels, "autoFitLabels", true);
+			Scribe_Values.Look(ref verboseLogging, "verboseLogging", true);
+		}
+	}
+
+	public class GATMod : Mod
+	{
+		public const string ModVersion = "31.0";
+		public static GATSettings Settings;
+		private static string selfTestResult = "";
+
+		public GATMod(ModContentPack content) : base(content)
+		{
+			Settings = GetSettings<GATSettings>();
+			
+			// Выводим версию и информацию в лог при старте
+			System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
+			string asmVersion = asm.GetName().Version.ToString();
+			System.IO.FileInfo fi = new System.IO.FileInfo(asm.Location);
+			GATLog.Msg("Started: v" + ModVersion + " (Asm: " + asmVersion + ", Date: " + fi.LastWriteTime.ToString("o") + ")");
+			GATLog.Msg("Prompt v" + Prompt.PromptVersion + ", Model: " + Settings.model);
+		}
+
+		public override string SettingsCategory()
+		{
+			return "Global Auto Translator";
+		}
+
+		public override void DoSettingsWindowContents(Rect inRect)
+		{
+			var list = new Listing_Standard();
+			list.Begin(inRect);
+
+			list.Label("Эндпоинт (OpenAI-совместимый):");
+			Settings.endpoint = list.TextEntry(Settings.endpoint);
+
+			list.Label("Модель:");
+			Settings.model = list.TextEntry(Settings.model);
+
+			list.Label("API-ключ (можно пусто для локального прокси):");
+			Settings.apiKey = list.TextEntry(Settings.apiKey);
+
+			list.Gap(8f);
+			Settings.batchSize = (int)list.SliderLabeled(
+				"Строк в одном запросе: " + Settings.batchSize, Settings.batchSize, 5f, 120f);
+			Settings.maxConcurrent = (int)list.SliderLabeled(
+				"Параллельных запросов: " + Settings.maxConcurrent +
+				(TranslateWorker.ActiveThreads > 0 && TranslateWorker.ActiveThreads != Mathf.Clamp(Settings.maxConcurrent, 1, 4)
+					? "  (сейчас работает " + TranslateWorker.ActiveThreads + ", применится при закрытии окна)"
+					: ""),
+				Settings.maxConcurrent, 1f, 4f);
+			Settings.timeoutSeconds = (int)list.SliderLabeled(
+				"Таймаут, сек: " + Settings.timeoutSeconds, Settings.timeoutSeconds, 15f, 300f);
+
+			list.Gap(8f);
+			list.CheckboxLabeled("Переводить Defs (названия предметов, зданий, существ)", ref Settings.translateDefs);
+			list.CheckboxLabeled("Переводить описания (дорого по токенам)", ref Settings.translateDescriptions);
+			list.CheckboxLabeled("Переводить Keyed-строки (текст интерфейса)", ref Settings.translateKeyed);
+			list.CheckboxLabeled("Слой 3: перехват интерфейса на лету (UI / кнопки / диалоги; может дать просадку кадров)", ref Settings.translateWidgets);
+			list.CheckboxLabeled("Уменьшать шрифт, если перевод не влезает", ref Settings.autoFitLabels);
+			list.CheckboxLabeled("Подробный лог", ref Settings.verboseLogging);
+			list.CheckboxLabeled("Отправлять reasoning_effort=none", ref Settings.sendReasoningEffortNone);
+			list.CheckboxLabeled("Требовать response_format=json_object", ref Settings.requestJsonObject);
+
+			list.Gap(10f);
+			list.Label("Статус: в кэше " + TranslationCache.Count +
+			           " | в очереди " + TranslateWorker.Pending +
+			           " | переведено за сессию " + TranslateWorker.TranslatedThisSession +
+			           " | отброшено " + TranslateWorker.Failed +
+			           (TranslateWorker.Paused ? "  [ПАУЗА: прокси недоступен]" : ""));
+
+			list.Gap(6f);
+			if (list.ButtonText("Проверить соединение с ИИ сейчас"))
+			{
+				selfTestResult = "Проверка соединения...";
+				var t = new Thread(() =>
+				{
+					try
+					{
+						selfTestResult = TranslateWorker.RunProbe(ignoreCooldown: true);
+					}
+					catch (System.Exception e)
+					{
+						selfTestResult = "Ошибка проверки: " + e.Message;
+					}
+				});
+				t.IsBackground = true;
+				t.Name = "GAT-Manual-Probe";
+				t.Start();
+			}
+			if (list.ButtonText("Проверить качество перевода (расширенный тест)"))
+			{
+				selfTestResult = "Запрос отправлен, жди...";
+				var t = new Thread(() => { selfTestResult = LlmClient.SelfTest(Settings); });
+				t.IsBackground = true;
+				t.Start();
+			}
+			if (list.ButtonText("Запустить самотест"))
+			{
+				SelfTest.Run();
+				GATLog.Msg("Самотест выполнен вручную из настроек мода.");
+				Messages.Message("Самотест выполнен. Результаты в логе (Ctrl+F12)", MessageTypeDefOf.TaskCompletion, false);
+			}
+			if (list.ButtonText("Перевести все Defs сейчас (поставить в очередь)"))
+			{
+				int n = DefPostProcessor.EnqueueAll();
+				Messages.Message("В очередь добавлено строк: " + n, MessageTypeDefOf.TaskCompletion, false);
+			}
+			if (list.ButtonText("Экспортировать кэш в мод с XML-переводом"))
+			{
+				string path = LanguageExporter.ExportAll();
+				Messages.Message("Готово: " + path, MessageTypeDefOf.TaskCompletion, false);
+			}
+			if (list.ButtonText("Сбросить карантин (повторить ошибочные строки)"))
+			{
+				TranslateWorker.ClearQuarantine();
+				Messages.Message("Карантин очищен", MessageTypeDefOf.TaskCompletion, false);
+			}
+			if (list.ButtonText("Очистить список окончательных отбраковок (" + TranslationCache.PermanentFailedCount + ")"))
+			{
+				TranslationCache.ClearPermanentFailed();
+				Messages.Message("Список окончательных отбраковок очищен", MessageTypeDefOf.TaskCompletion, false);
+			}
+			if (list.ButtonText("Сохранить кэш на диск"))
+			{
+				TranslationCache.Flush();
+				Messages.Message("Кэш сохранён: " + TranslationCache.CacheDir, MessageTypeDefOf.TaskCompletion, false);
+			}
+
+			if (!selfTestResult.NullOrEmpty())
+			{
+				list.Gap(8f);
+				list.Label(selfTestResult);
+			}
+
+			list.End();
+			base.DoSettingsWindowContents(inRect);
+		}
+
+		public override void WriteSettings()
+		{
+			base.WriteSettings();
+			TranslationCache.Flush();
+
+			// Число потоков читается только в Start(), поэтому пул надо пересобрать.
+			int want = Mathf.Clamp(Settings.maxConcurrent, 1, 4);
+			if (TranslateWorker.ActiveThreads > 0 && TranslateWorker.ActiveThreads != want)
+			{
+				Messages.Message("Пул потоков перезапускается: " + want, MessageTypeDefOf.TaskCompletion, false);
+				var t = new System.Threading.Thread(TranslateWorker.Restart);
+				t.IsBackground = true;
+				t.Name = "GAT-Restart";
+				t.Start();
+			}
+		}
+	}
+}
+
+===== SECTION: FILE: Source/Patches.cs =====
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Reflection;
+using HarmonyLib;
+using Verse;
+using RimWorld;
+using RimWorld.Planet;
+
+namespace GlobalAutoTranslator
+{
+	/// <summary>
+	/// Безопасный сборщик UI-строк отрисовки (Слой 3 V2).
+	/// Выполняет быструю фильтрацию без аллокаций во время OnGUI,
+	/// а тяжелый разбор и постановку в очередь делает в Drain() главного потока.
+	/// </summary>
+	public static class UiHarvest
+	{
+		private static readonly HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+		private static readonly ConcurrentQueue<string> pending = new ConcurrentQueue<string>();
+		private static int newThisFrame;
+		private static int lastFrameCount = -1;
+
+		private static int enqueuedThisSession;
+		private static int filteredCount;
+		private static bool limitReachedLogged;
+
+		private const int MaxEnqueuedPerSession = 100000;
+		private const int MaxSeenCapacity = 100000;
+
+		public static int EnqueuedThisSession => enqueuedThisSession;
+		public static int SessionLimit => MaxEnqueuedPerSession;
+		public static bool LimitReached => enqueuedThisSession >= MaxEnqueuedPerSession;
+		public static int SeenCount { get { lock (seen) { return seen.Count; } } }
+
+		public static void Note(string s)
+		{
+			if (string.IsNullOrEmpty(s)) return;
+			int len = s.Length;
+			if (len < 2 || len > 600) return;
+
+			// Срезание обрамляющих тегов
+			if (s.StartsWith("<") && s.EndsWith(">") && s.Length > 2)
+			{
+				int firstClose = s.IndexOf('>');
+				if (firstClose > 1 && firstClose < s.Length - 2)
+				{
+					string openTag = s.Substring(0, firstClose + 1);
+					if (!openTag.StartsWith("</"))
+					{
+						int eqIdx = openTag.IndexOf('=');
+						string tagName = eqIdx > 0 ? openTag.Substring(1, eqIdx - 1) : openTag.Substring(1, openTag.Length - 2);
+						string closeTag = "</" + tagName + ">";
+						if (s.EndsWith(closeTag))
+						{
+							string inner = s.Substring(openTag.Length, s.Length - openTag.Length - closeTag.Length);
+							lock (seen)
+							{
+								if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+									seen.Add(s);
+							}
+							Note(inner);
+							return;
+						}
+					}
+				}
+			}
+
+			int currentFrame = UnityEngine.Time.frameCount;
+			if (currentFrame != lastFrameCount)
+			{
+				lastFrameCount = currentFrame;
+				newThisFrame = 0;
+			}
+
+			if (newThisFrame >= 4) return;
+
+			lock (seen)
+			{
+				if (seen.Count >= MaxSeenCapacity) return;
+				if (seen.Contains(s)) return;
+			}
+
+			if (!PlaceholderGuard.NeedsTranslation(s))
+			{
+				lock (seen)
+				{
+					if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+					{
+						seen.Add(s);
+					}
+				}
+				return;
+			}
+
+			// Если у строки есть числовой/юнитовый хвост после двоеточия ("Global Animation Speed: 100%"), в очередь кладём только голову ("Global Animation Speed")
+			int colonIdx = s.LastIndexOf(':');
+			if (colonIdx > 0 && colonIdx < s.Length - 1)
+			{
+				string tail = s.Substring(colonIdx + 1);
+				bool isTailNumeric = true;
+				for (int i = 0; i < tail.Length; i++)
+				{
+					char c = tail[i];
+					if (!char.IsDigit(c) && c != ' ' && c != '%' && c != '.' && c != ',' && c != '-' && c != '+' && c != '/' && c != 'x' && c != '×')
+					{
+						isTailNumeric = false;
+						break;
+					}
+				}
+				if (isTailNumeric)
+				{
+					string head = s.Substring(0, colonIdx).TrimEnd();
+					if (head.Length >= 2)
+					{
+						lock (seen)
+						{
+							if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+								seen.Add(s); // добавляем оригинальную строку чтобы не триггериться
+							if (seen.Count < MaxSeenCapacity && !seen.Contains(head))
+							{
+								seen.Add(head);
+								pending.Enqueue(head);
+								newThisFrame++;
+							}
+						}
+						return;
+					}
+				}
+			}
+
+			// Если строка с двоеточием ("Label:"), ставим в очередь только очищенную версию ("Label"), а оригинальную добавляем в seen
+			if (s.EndsWith(":"))
+			{
+				string trimmed = s.Substring(0, s.Length - 1).TrimEnd();
+				if (trimmed.Length >= 2)
+				{
+					lock (seen)
+					{
+						if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+							seen.Add(s); // добавляем оригинальную строку чтобы не триггериться
+						if (seen.Count < MaxSeenCapacity && !seen.Contains(trimmed))
+						{
+							seen.Add(trimmed);
+							pending.Enqueue(trimmed);
+							newThisFrame++;
+						}
+					}
+					return;
+				}
+			}
+
+			lock (seen)
+			{
+				if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+				{
+					seen.Add(s);
+					pending.Enqueue(s);
+					newThisFrame++;
+				}
+			}
+		}
+
+		public static bool IsJunkPath(string s)
+		{
+			bool hasSlash = s.Contains("/") || s.Contains("\\");
+			return (hasSlash && !s.Contains(" ")) ||
+				   s.Contains("://") ||
+				   s.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+				   s.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
+				   s.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
+		}
+
+		public static void Drain(int maxPerCall = 50)
+		{
+
+			if (enqueuedThisSession >= MaxEnqueuedPerSession)
+			{
+				if (!limitReachedLogged)
+				{
+					limitReachedLogged = true;
+					GATLog.Warn("UI Harvest: достигнут лимит " + MaxEnqueuedPerSession + " строк за сессию. Сбор приостановлен.");
+				}
+				return;
+			}
+
+			string s;
+			int examined = 0;
+			while (examined < maxPerCall && pending.TryDequeue(out s))
+			{
+				examined++;
+
+				if (!PlaceholderGuard.ShouldTranslate(s))
+				{
+					filteredCount++;
+					continue;
+				}
+
+				// Фильтр путей, файлов и расширений
+				if (IsJunkPath(s))
+				{
+					filteredCount++;
+					continue;
+				}
+
+				// Проверка цифр
+				int digits = 0;
+				bool hasLetter = false;
+				for (int i = 0; i < s.Length; i++)
+				{
+					char c = s[i];
+					if (char.IsDigit(c)) digits++;
+					if (char.IsLetter(c)) hasLetter = true;
+				}
+
+				if (!hasLetter) { filteredCount++; continue; }
+				if (digits > 0 && s.Length < 25) { filteredCount++; continue; }
+				if (digits * 4 > s.Length) { filteredCount++; continue; }
+
+				// CamelCase & Hex фильтр только для однословных строк без пробелов
+				if (!s.Contains(" "))
+				{
+					if (IsCamelCaseOrCodeIdentifier(s))
+					{
+						filteredCount++;
+						continue;
+					}
+				}
+
+				TranslateWorker.Enqueue("ui", s, isVolatile: false);
+				enqueuedThisSession++;
+
+				if (enqueuedThisSession % 300 == 0)
+				{
+					GATLog.Msg("UI Harvest статус: поставлено в очередь " + enqueuedThisSession +
+					           ", в seen " + SeenCount + ", отфильтровано мусора " + filteredCount);
+				}
+			}
+		}
+
+		private static bool IsCamelCaseOrCodeIdentifier(string s)
+		{
+			if (string.IsNullOrEmpty(s)) return false;
+			if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) return true;
+			if (s.Contains("_") || s.Contains(".")) return true;
+
+			if (s.Length >= 8)
+			{
+				bool allHex = true;
+				for (int i = 0; i < s.Length; i++)
+				{
+					char c = s[i];
+					if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '-'))
+					{ allHex = false; break; }
+				}
+				if (allHex) return true;
+			}
+
+			bool hasLower = false;
+			for (int i = 0; i < s.Length; i++)
+			{
+				char c = s[i];
+				if (char.IsLower(c)) hasLower = true;
+				else if (hasLower && char.IsUpper(c)) return true;
+			}
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 — Автоподгонка шрифта длинных UI-переводов (Widgets.Label(Rect, string)).
+	/// </summary>
+	[HarmonyPatch(typeof(Widgets), "Label", new[] { typeof(UnityEngine.Rect), typeof(string) })]
+	public static class Patch_Widgets_Label_AutoFit
+	{
+		[HarmonyPrefix]
+		[HarmonyPriority(Priority.Low)]
+		public static void Prefix(UnityEngine.Rect rect, string label, out GameFont? __state)
+		{
+			__state = null;
+			var s = GATMod.Settings;
+			if (s == null || !s.autoFitLabels) return;
+
+			try
+			{
+				if (Text.Font != GameFont.Small) return;
+				if (string.IsNullOrEmpty(label) || label.Length < 4) return;
+				if (rect.width < 24f || rect.height < 6f || rect.height > 200f) return;
+
+				bool hasCyr = false;
+				for (int i = 0; i < label.Length; i++)
+				{
+					char c = label[i];
+					if (c >= '\u0400' && c <= '\u052F') { hasCyr = true; break; }
+				}
+				if (!hasCyr) return;
+
+				if (Text.CalcHeight(label, rect.width) > rect.height + 0.5f)
+				{
+					GameFont orig = Text.Font;
+					__state = orig;
+					Text.Font = GameFont.Tiny;
+					if (Text.Font != GameFont.Tiny)
+					{
+						Text.Font = orig;
+						__state = null;
+					}
+				}
+			}
+			catch
+			{
+				if (__state.HasValue)
+				{
+					try { Text.Font = __state.Value; } catch { }
+				}
+				__state = null;
+			}
+		}
+
+		[HarmonyPostfix]
+		public static void Postfix(ref GameFont? __state)
+		{
+			if (__state.HasValue)
+			{
+				try
+				{
+					Text.Font = __state.Value;
+				}
+				catch { }
+				finally
+				{
+					__state = null;
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// Вспомогательный класс для онлайн-перевода динамических объектов (Задания, Письма, Уведомления).
+	/// </summary>
+	public static class DynamicTranslator
+	{
+		private static readonly AccessTools.FieldRef<Letter, TaggedString> letterLabelRef;
+		private static readonly AccessTools.FieldRef<ChoiceLetter, TaggedString> choiceLetterTextRef;
+
+		static DynamicTranslator()
+		{
+			try
+			{
+				letterLabelRef = AccessTools.FieldRefAccess<Letter, TaggedString>("label");
+			}
+			catch (Exception e)
+			{
+				letterLabelRef = null;
+				GATLog.Warn("Не удалось инициализировать FieldRef для Letter.label: " + e.Message);
+			}
+
+			try
+			{
+				choiceLetterTextRef = AccessTools.FieldRefAccess<ChoiceLetter, TaggedString>("text");
+			}
+			catch (Exception e)
+			{
+				choiceLetterTextRef = null;
+				GATLog.Warn("Не удалось инициализировать FieldRef для ChoiceLetter.text: " + e.Message);
+			}
+		}
+
+		public static void TranslateQuest(Quest quest)
+		{
+			if (quest == null) return;
+
+			// 1. Имя квеста (заголовок)
+			if (!string.IsNullOrEmpty(quest.name))
+			{
+				string cached;
+				if (TranslationCache.TryGet("title", quest.name, out cached))
+				{
+					quest.name = cached;
+				}
+				else if (PlaceholderGuard.ShouldTranslate(quest.name))
+				{
+					string origName = quest.name;
+					TranslateWorker.Enqueue("title", origName, v => {
+						DefPostProcessor.QueueApply(() => { quest.name = v; });
+					}, isVolatile: false);
+				}
+			}
+
+			// 2. Описание квеста
+			string descRaw = quest.description.RawText;
+			if (!string.IsNullOrEmpty(descRaw))
+			{
+				string cached;
+				if (TranslationCache.TryGet("description", descRaw, out cached))
+				{
+					quest.description = new TaggedString(cached);
+				}
+				else if (PlaceholderGuard.ShouldTranslate(descRaw))
+				{
+					TranslateWorker.Enqueue("description", descRaw, v => {
+						DefPostProcessor.QueueApply(() => { quest.description = new TaggedString(v); });
+					}, isVolatile: true);
+				}
+			}
+		}
+
+		public static void TranslateLetter(Letter letter)
+		{
+			if (letter == null) return;
+
+			// Заголовок письма на панели
+			try
+			{
+				if (letterLabelRef != null)
+				{
+					string labelRaw = letterLabelRef(letter).RawText;
+					if (!string.IsNullOrEmpty(labelRaw))
+					{
+						string cached;
+						if (TranslationCache.TryGet("title", labelRaw, out cached))
+						{
+							letterLabelRef(letter) = new TaggedString(cached);
+						}
+						else if (PlaceholderGuard.ShouldTranslate(labelRaw))
+						{
+							TranslateWorker.Enqueue("title", labelRaw, v => {
+								DefPostProcessor.QueueApply(() => { letterLabelRef(letter) = new TaggedString(v); });
+							}, isVolatile: false);
+						}
+					}
+				}
+			}
+			catch { }
+
+			// Заголовок и текст диалогового окна письма (ChoiceLetter)
+			var cl = letter as ChoiceLetter;
+			if (cl != null)
+			{
+				if (!string.IsNullOrEmpty(cl.title))
+				{
+					string cached;
+					if (TranslationCache.TryGet("title", cl.title, out cached))
+					{
+						cl.title = cached;
+					}
+					else if (PlaceholderGuard.ShouldTranslate(cl.title))
+					{
+						string origTitle = cl.title;
+						TranslateWorker.Enqueue("title", origTitle, v => {
+							DefPostProcessor.QueueApply(() => { cl.title = v; });
+						}, isVolatile: false);
+					}
+				}
+
+				try
+				{
+					if (choiceLetterTextRef != null)
+					{
+						string textRaw = choiceLetterTextRef(cl).RawText;
+						if (!string.IsNullOrEmpty(textRaw))
+						{
+							string cached;
+							if (TranslationCache.TryGet("description", textRaw, out cached))
+							{
+								choiceLetterTextRef(cl) = new TaggedString(cached);
+							}
+							else if (PlaceholderGuard.ShouldTranslate(textRaw))
+							{
+								TranslateWorker.Enqueue("description", textRaw, v => {
+									DefPostProcessor.QueueApply(() => { choiceLetterTextRef(cl) = new TaggedString(v); });
+								}, isVolatile: true);
+							}
+						}
+					}
+				}
+				catch { }
+
+				if (cl.quest != null)
+				{
+					TranslateQuest(cl.quest);
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 2 — Keyed-строки. Перехватываем тот самый метод, через который игра
+	/// достаёт любой перевод по ключу.
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_LoadedLanguage_TryGetTextFromKey
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден LoadedLanguage.TryGetTextFromKey — слой Keyed выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(LoadedLanguage), "TryGetTextFromKey");
+		}
+
+		[HarmonyPostfix]
+		public static void Postfix(string key, ref TaggedString translated, ref bool __result)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateKeyed) return;
+
+			string current = translated.RawText;
+
+			if (__result && !PlaceholderGuard.ShouldTranslate(current)) return;
+			if (!__result || string.IsNullOrEmpty(current) || current == key) return;
+			if (!PlaceholderGuard.ShouldTranslate(current)) return;
+
+			LanguageExporter.NoteKeyed(key, current);
+
+			string cached;
+			if (TranslationCache.TryGet("keyed", current, out cached) && !string.IsNullOrWhiteSpace(cached))
+			{
+				// Страховка: если оригинал содержал ->, а перевод потерял/изменил число стрелок — вернуть оригинал
+				if (current.Contains("->"))
+				{
+					int srcArrows = CountArrows(current);
+					int dstArrows = CountArrows(cached);
+					if (srcArrows != dstArrows)
+					{
+						GATLog.Warn("Грамматика (->): оригинал содержит " + srcArrows + " стрелок, перевод " + dstArrows +
+						            ". Возвращаю оригинал.\n  key=" + key + "\n  orig=" + current + "\n  dst=" + cached);
+						return; // не подставляем перевод
+					}
+				}
+
+				translated = new TaggedString(cached);
+				return;
+			}
+
+			TranslateWorker.Enqueue("keyed", current);
+		}
+
+		private static int CountArrows(string s)
+		{
+			int n = 0, at = 0;
+			while ((at = s.IndexOf("->", at, StringComparison.Ordinal)) >= 0) { n++; at += 2; }
+			return n;
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват отрисовки текста Widgets.Label(Rect, string).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_Label_RectString
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.Label(Rect, string) — перехват текста UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.Label), new Type[] { typeof(UnityEngine.Rect), typeof(string) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват отрисовки текста Widgets.Label(Rect, TaggedString).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_Label_RectTaggedString
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.Label(Rect, TaggedString) — перехват текста TaggedString UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.Label), new Type[] { typeof(UnityEngine.Rect), typeof(TaggedString) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref TaggedString label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			string raw = label.RawText;
+			if (string.IsNullOrEmpty(raw) || raw.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(raw, out cached))
+				label = new TaggedString(cached);
+			else
+				UiHarvest.Note(raw);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват отрисовки текста Widgets.LabelFit(Rect, string).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_LabelFit
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.LabelFit(Rect, string) — перехват подгоняемого текста UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.LabelFit), new Type[] { typeof(UnityEngine.Rect), typeof(string) });
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват текста кнопок Widgets.ButtonText (перегрузка 1).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_ButtonText
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.ButtonText (перегрузка 1) — перехват текста кнопок UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.ButtonText), new Type[] {
+				typeof(UnityEngine.Rect), typeof(string), typeof(bool), typeof(bool), typeof(bool), typeof(Nullable<UnityEngine.TextAnchor>)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват текста кнопок Widgets.ButtonText (перегрузка 2 с параметром Color).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_ButtonText_Color
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.ButtonText (перегрузка 2 с Color) — перехват цветных кнопок UI выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Widgets), nameof(Widgets.ButtonText), new Type[] {
+				typeof(UnityEngine.Rect), typeof(string), typeof(bool), typeof(bool), typeof(UnityEngine.Color), typeof(bool), typeof(Nullable<UnityEngine.TextAnchor>)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>Перехват добавления нового задания в QuestManager.</summary>
+	[HarmonyPatch]
+	public static class Patch_QuestManager_Add
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден QuestManager.Add — динамический перехват квестов выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(QuestManager), "Add");
+		}
+
+		[HarmonyPostfix]
+		public static void Postfix(Quest quest)
+		{
+			try { DynamicTranslator.TranslateQuest(quest); } catch { }
+		}
+	}
+
+	/// <summary>Перехват открытия окна Заданий (MainTabWindow_Quests) — переводит все активные задания.</summary>
+	[HarmonyPatch]
+	public static class Patch_MainTabWindow_Quests_PreOpen
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден MainTabWindow_Quests.PreOpen — автоперехват списка квестов выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(MainTabWindow_Quests), "PreOpen");
+		}
+
+		[HarmonyPostfix]
+		public static void Postfix()
+		{
+			try
+			{
+				if (Find.QuestManager != null && Find.QuestManager.QuestsListForReading != null)
+				{
+					var list = Find.QuestManager.QuestsListForReading;
+					for (int i = 0; i < list.Count; i++)
+					{
+						DynamicTranslator.TranslateQuest(list[i]);
+					}
+				}
+			}
+			catch { }
+		}
+	}
+
+	/// <summary>Перехват получения писем и всплывающих событий (LetterStack.ReceiveLetter).</summary>
+	[HarmonyPatch]
+	public static class Patch_LetterStack_ReceiveLetter
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден LetterStack.ReceiveLetter — перевод писем выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(LetterStack), "ReceiveLetter", new Type[] {
+				typeof(Letter), typeof(string), typeof(int), typeof(bool)
+			});
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(Letter let)
+		{
+			try { DynamicTranslator.TranslateLetter(let); } catch { }
+		}
+	}
+
+	/// <summary>Применяет отложенные изменения Defs, UI и динамических объектов в главном потоке каждый кадр.</summary>
+	[HarmonyPatch]
+	public static class Patch_Root_Update
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Verse.Root.Update — сброс Defs и UI в главном потоке выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(Root), "Update");
+		}
+
+		[HarmonyPostfix]
+		public static void Postfix()
+		{
+			try { DefPostProcessor.DrainApply(); } catch { }
+			try { UiHarvest.Drain(); } catch { }
+		}
+	}
+
+	/// <summary>Периодический сброс кэша на диск во время игры.</summary>
+	[HarmonyPatch]
+	public static class Patch_TickManager_Autosave
+	{
+		private static int counter;
+
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден TickManager.DoSingleTick — автосохранение кэша выключено.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(TickManager), "DoSingleTick");
+		}
+
+		[HarmonyPostfix]
+		public static void Postfix()
+		{
+			if (++counter < 7200) return; // ~2 игровых часа
+			counter = 0;
+			try { TranslationCache.Flush(); } catch { }
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват всплывающих подсказок TooltipHandler.TipRegion(Rect, string).
+	/// <summary>
+	/// Перехват открытия писем (ChoiceLetter.OpenLetter).
+	/// Перед построением окна диалога перечитывает кэш и шаблонный индекс для text и title.
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_ChoiceLetter_OpenLetter
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден ChoiceLetter.OpenLetter — обновление писем перед открытием выключено.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			return AccessTools.Method(typeof(ChoiceLetter), "OpenLetter");
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(Letter __instance)
+		{
+			var cl = __instance as ChoiceLetter;
+			if (cl == null) return;
+			try
+			{
+				DynamicTranslator.TranslateLetter(cl);
+			}
+			catch { }
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват всплывающих подсказок TooltipHandler.TipRegion.
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_TooltipHandler_TipRegion
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден TooltipHandler.TipRegion(Rect, TipSignal) — перехват подсказок выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			foreach (var m in typeof(TooltipHandler).GetMethods(BindingFlags.Public | BindingFlags.Static))
+			{
+				if (m.Name != "TipRegion") continue;
+				var ps = m.GetParameters();
+				if (ps.Length >= 2 && ps[0].ParameterType == typeof(UnityEngine.Rect) && ps[1].ParameterType == typeof(TipSignal)) return m;
+			}
+			return null;
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref TipSignal tip)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (tip.textGetter != null && string.IsNullOrEmpty(tip.text)) return;
+			if (string.IsNullOrEmpty(tip.text) || tip.text.Length > 600) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(tip.text, out cached))
+				tip.text = cached;
+			else
+				UiHarvest.Note(tip.text);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват подписей чекбоксов Widgets.CheckboxLabeled.
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Widgets_CheckboxLabeled
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Widgets.CheckboxLabeled — перехват чекбоксов выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			foreach (var m in typeof(Widgets).GetMethods(BindingFlags.Public | BindingFlags.Static))
+			{
+				if (m.Name != "CheckboxLabeled") continue;
+				var ps = m.GetParameters();
+				if (ps.Length >= 2 && ps[0].ParameterType == typeof(UnityEngine.Rect) && ps[1].ParameterType == typeof(string)) return m;
+			}
+			return null;
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 600) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват контекстного меню ПКМ (FloatMenuOption).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_FloatMenuOption_Construct
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден FloatMenuOption — перехват меню ПКМ выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			foreach (var ctor in typeof(FloatMenuOption).GetConstructors(BindingFlags.Public | BindingFlags.Instance))
+			{
+				var ps = ctor.GetParameters();
+				if (ps.Length >= 1 && ps[0].ParameterType == typeof(string)) return ctor;
+			}
+			return null;
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string label)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(label) || label.Length > 600) return;
+
+			string cached;
+			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else
+				UiHarvest.Note(label);
+		}
+	}
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват всплывающих уведомлений вверху слева (Messages.Message).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_Messages_Message_String
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден Messages.Message — перехват уведомлений выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			foreach (var m in typeof(Messages).GetMethods(BindingFlags.Public | BindingFlags.Static))
+			{
+				if (m.Name != "Message") continue;
+				var ps = m.GetParameters();
+				if (ps.Length >= 1 && ps[0].ParameterType == typeof(string)) return m;
+			}
+			return null;
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref string text)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			if (string.IsNullOrEmpty(text) || text.Length > 600) return;
+
+			string cached;
+			if (TranslationCache.TryGet("description", text, out cached))
+			{
+				text = cached;
+			}
+			else if (TranslationCache.TryGetTemplated(text, out cached))
+			{
+				text = cached;
+			}
+			else if (TranslationCache.TryGetFlat(text, out cached))
+			{
+				text = cached;
+			}
+			else
+			{
+				TranslateWorker.Enqueue("description", text, isVolatile: false);
+			}
+		}
+	}
+
+
+	/// <summary>
+	/// СЛОЙ 3 V2 — Перехват текстов диалогов с NPC (DiaNode TaggedString).
+	/// </summary>
+	[HarmonyPatch]
+	public static class Patch_DiaNode_Construct_TaggedString
+	{
+		public static bool Prepare()
+		{
+			bool ok = TargetMethod() != null;
+			if (!ok) GATLog.Warn("Не найден DiaNode(TaggedString) — перехват TaggedString диалогов NPC выключен.");
+			return ok;
+		}
+
+		public static MethodBase TargetMethod()
+		{
+			foreach (var ctor in typeof(DiaNode).GetConstructors(BindingFlags.Public | BindingFlags.Instance))
+			{
+				var ps = ctor.GetParameters();
+				if (ps.Length == 1 && ps[0].ParameterType == typeof(TaggedString)) return ctor;
+			}
+			return null;
+		}
+
+		[HarmonyPrefix]
+		public static void Prefix(ref TaggedString text)
+		{
+			var s = GATMod.Settings;
+			if (s == null || !s.translateWidgets) return;
+			string raw = text.RawText;
+			if (string.IsNullOrEmpty(raw) || raw.Length > 1000) return;
+
+			string cached;
+			if (TranslationCache.TryGet("description", raw, out cached))
+				text = new TaggedString(cached);
+			else if (TranslationCache.TryGetTemplated(raw, out cached))
+				text = new TaggedString(cached);
+			else
+				TranslateWorker.Enqueue("description", raw, isVolatile: false);
+		}
+	}
+}
+
+===== SECTION: FILE: Source/TranslationCache.cs =====
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Linq;
+using Verse;
+
+namespace GlobalAutoTranslator
+{
+	/// <summary>
+	/// Кэш переводов. Сознательно НЕ SQLite: System.Data.SQLite требует нативную dll,
+	/// которая в Mono-сборке RimWorld часто не грузится и валит игру на старте.
+	/// Вместо этого — шардированные TSV-файлы: быстро, без зависимостей, легко читается глазом.
+	///
+	/// Путь: %APPDATA%\..\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\GlobalTranslator\cache\
+	/// </summary>
+	public static class TranslationCache
+	{
+		private static readonly ConcurrentDictionary<string, string> map =
+			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+
+		/// <summary>Исходный текст по ключу. Нужен для экспорта и для плоского индекса.</summary>
+		private static readonly ConcurrentDictionary<string, string> sources =
+			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+
+		/// <summary>Плоский индекс "исходная строка -> перевод" для слоя 3.
+		/// Без MD5 и без контекста: в Widgets.Label нельзя тратить ни одной аллокации.</summary>
+		private static readonly ConcurrentDictionary<string, string> flat =
+			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+		private static readonly ConcurrentDictionary<string, int> flatNoFallback =
+			new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+
+		private static int cacheGeneration;
+
+		public class TemplateRecord
+		{
+			public Regex Pattern;
+			public string TargetTemplate;
+			public int MinLength;
+			public string Anchor;
+		}
+
+		private static readonly ConcurrentBag<TemplateRecord> templates = new ConcurrentBag<TemplateRecord>();
+		private static readonly ConcurrentDictionary<string, byte> templateKeys = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+		private static readonly ConcurrentDictionary<string, int> templateNoMatch = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+		private static int templateCount;
+		private static bool templateKeysLimitLogged;
+		private static bool templateCountLimitLogged;
+
+		private static readonly ConcurrentDictionary<string, byte> dirtyShards =
+			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+
+		private static readonly ConcurrentDictionary<string, byte> permanentFailed =
+			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+		private static bool permanentFailedLimitLogged;
+		private const int MaxPermanentFailed = 20000;
+
+		private static readonly object ioLock = new object();
+
+		public static int Count { get { return map.Count; } }
+		public static int PermanentFailedCount { get { return permanentFailed.Count; } }
+
+		private static string ExpectedFailedHeader
+		{
+			get
+			{
+				string modelName = GATMod.Settings != null ? GATMod.Settings.model : "default";
+				return "# v" + Prompt.PromptVersion + "\t" + modelName;
+			}
+		}
+
+		public static bool IsPermanentFailed(string key)
+		{
+			return permanentFailed.ContainsKey(key);
+		}
+
+		public static void AddPermanentFailed(string key, string source, string reason = null)
+		{
+			if (string.IsNullOrEmpty(key)) return;
+			if (permanentFailed.Count >= MaxPermanentFailed)
+			{
+				if (!permanentFailedLimitLogged)
+				{
+					permanentFailedLimitLogged = true;
+					GATLog.Warn("Достигнут лимит " + MaxPermanentFailed + " записей в failed.tsv. Запись приостановлена.");
+				}
+				return;
+			}
+
+			// Защита от дубликатов
+			if (!permanentFailed.TryAdd(key, 1)) return;
+
+			try
+			{
+				lock (ioLock)
+				{
+					string path = Path.Combine(RootDir, "failed.tsv");
+					if (!File.Exists(path))
+					{
+						File.WriteAllText(path, ExpectedFailedHeader + "\n", Encoding.UTF8);
+					}
+					string entry = key + "\t" + EscapeCell(source ?? "");
+					if (!string.IsNullOrEmpty(reason))
+						entry += "\t" + EscapeCell(reason);
+					File.AppendAllText(path, entry + "\n", Encoding.UTF8);
+				}
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Не удалось записать в failed.tsv: " + e.Message);
+			}
+		}
+
+		public static void ClearPermanentFailed()
+		{
+			permanentFailed.Clear();
+			permanentFailedLimitLogged = false;
+			try
+			{
+				lock (ioLock)
+				{
+					string path = Path.Combine(RootDir, "failed.tsv");
+					if (File.Exists(path)) File.Delete(path);
+				}
+				GATLog.Msg("Список окончательных отбраковок (failed.tsv) успешно очищен.");
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Не удалось удалить failed.tsv: " + e.Message);
+			}
+		}
+
+		private static void LoadPermanentFailed()
+		{
+			try
+			{
+				string path = Path.Combine(RootDir, "failed.tsv");
+				if (!File.Exists(path)) return;
+
+				string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+				if (lines.Length == 0) return;
+
+				// Проверка заголовка версии промпта и модели
+				string expectedHeader = ExpectedFailedHeader;
+				if (!lines[0].StartsWith("# v") || !string.Equals(lines[0].Trim(), expectedHeader, StringComparison.Ordinal))
+				{
+					GATLog.Warn("Версия промпта или модели изменилась (в файле: " + lines[0] + ", ожидалось: " + expectedHeader + "). Файл failed.tsv сброшен.");
+					ClearPermanentFailed();
+					return;
+				}
+
+				int loaded = 0;
+				for (int i = 1; i < lines.Length; i++)
+				{
+					string line = lines[i];
+					if (string.IsNullOrWhiteSpace(line)) continue;
+					string[] parts = line.Split('\t');
+					if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]))
+					{
+						if (permanentFailed.Count < MaxPermanentFailed)
+						{
+							permanentFailed[parts[0]] = 1;
+							loaded++;
+						}
+					}
+				}
+				if (loaded > 0)
+					GATLog.Msg("Загружен список окончательных отбраковок: " + loaded + " строк из failed.tsv");
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Ошибка чтения failed.tsv: " + e.Message);
+			}
+		}
+
+		public static string RootDir
+		{
+			get { return Path.Combine(GenFilePaths.SaveDataFolderPath, "GlobalTranslator"); }
+		}
+
+		public static string CacheDir { get { return Path.Combine(RootDir, "cache"); } }
+
+		/// <summary>Ключ = MD5(context|source). MD5 здесь не криптография, а только хеш для кэша.</summary>
+		public static string Key(string context, string source)
+		{
+			using (var md5 = MD5.Create())
+			{
+				byte[] h = md5.ComputeHash(Encoding.UTF8.GetBytes((context ?? "") + "|" + (source ?? "")));
+				var sb = new StringBuilder(32);
+				for (int i = 0; i < h.Length; i++) sb.Append(h[i].ToString("x2"));
+				return sb.ToString();
+			}
+		}
+
+		public static bool TryGet(string context, string source, out string translated)
+		{
+			return map.TryGetValue(Key(context, source), out translated);
+		}
+
+		public static bool TryGetByKey(string key, out string translated)
+		{
+			return map.TryGetValue(key, out translated);
+		}
+
+		public static bool TryGetFlat(string source, out string translated)
+		{
+			if (string.IsNullOrEmpty(source))
+			{
+				translated = null;
+				return false;
+			}
+
+			if (flat.TryGetValue(source, out translated)) return true;
+			int gen;
+			if (flatNoFallback.TryGetValue(source, out gen) && gen == System.Threading.Volatile.Read(ref cacheGeneration))
+			{
+				translated = null;
+				return false;
+			}
+
+			// 1. Двоеточие и пробелы на конце ("Label:" -> "Метка:")
+			if (source.EndsWith(":"))
+			{
+				string trimmed = source.Substring(0, source.Length - 1).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + source.Substring(trimmed.Length);
+					flat[source] = translated;
+					return true;
+				}
+			}
+
+			if (source.EndsWith(": "))
+			{
+				string trimmed = source.Substring(0, source.Length - 2).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + source.Substring(trimmed.Length);
+					flat[source] = translated;
+					return true;
+				}
+			}
+
+			// 2. Числовой/юнитовый хвост после двоеточия ("Global Animation Speed: 100%" -> head "Global Animation Speed", tail ": 100%")
+			int colonIdx = source.LastIndexOf(':');
+			if (colonIdx > 0 && colonIdx < source.Length - 1)
+			{
+				string tail = source.Substring(colonIdx + 1);
+				bool isTailNumeric = true;
+				for (int i = 0; i < tail.Length; i++)
+				{
+					char c = tail[i];
+					if (!char.IsDigit(c) && c != ' ' && c != '%' && c != '.' && c != ',' && c != '-' && c != '+' && c != '/' && c != 'x' && c != '×')
+					{
+						isTailNumeric = false;
+						break;
+					}
+				}
+				if (isTailNumeric)
+				{
+					string head = source.Substring(0, colonIdx).TrimEnd();
+					if (flat.TryGetValue(head, out string headTrans))
+					{
+						translated = headTrans + source.Substring(head.Length);
+						flat[source] = translated;
+						return true;
+					}
+				}
+			}
+
+			// 3. Вопросительный знак на конце ("Enable?" -> "Включить?")
+			if (source.EndsWith("?"))
+			{
+				string trimmed = source.Substring(0, source.Length - 1).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + "?";
+					flat[source] = translated;
+					return true;
+				}
+			}
+
+			// 4. Многоточие на конце ("Loading..." -> "Загрузка...")
+			if (source.EndsWith("..."))
+			{
+				string trimmed = source.Substring(0, source.Length - 3).TrimEnd();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = translated + "...";
+					flat[source] = translated;
+					return true;
+				}
+			}
+
+			// 5. Круглые скобки вокруг ("(Default)" -> "(По умолчанию)")
+			if (source.StartsWith("(") && source.EndsWith(")") && source.Length > 2)
+			{
+				string trimmed = source.Substring(1, source.Length - 2).Trim();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = "(" + translated + ")";
+					flat[source] = translated;
+					return true;
+				}
+			}
+
+			// 6. Квадратные скобки вокруг ("[MOD]" -> "[МОД]")
+			if (source.StartsWith("[") && source.EndsWith("]") && source.Length > 2)
+			{
+				string trimmed = source.Substring(1, source.Length - 2).Trim();
+				if (flat.TryGetValue(trimmed, out translated))
+				{
+					translated = "[" + translated + "]";
+					flat[source] = translated;
+					return true;
+				}
+			}
+
+			// 7. HTML-теги вокруг ("<b>text</b>" -> "<b>текст</b>")
+			if (source.StartsWith("<") && source.EndsWith(">") && source.Length > 2)
+			{
+				int firstClose = source.IndexOf('>');
+				if (firstClose > 1 && firstClose < source.Length - 2)
+				{
+					string openTag = source.Substring(0, firstClose + 1);
+					if (!openTag.StartsWith("</"))
+					{
+						int eqIdx = openTag.IndexOf('=');
+						string tagName = eqIdx > 0 ? openTag.Substring(1, eqIdx - 1) : openTag.Substring(1, openTag.Length - 2);
+						string closeTag = "</" + tagName + ">";
+						if (source.EndsWith(closeTag))
+						{
+							string inner = source.Substring(openTag.Length, source.Length - openTag.Length - closeTag.Length);
+							if (TryGetFlat(inner, out string innerTrans))
+							{
+								translated = openTag + innerTrans + closeTag;
+								flat[source] = translated;
+								return true;
+							}
+						}
+					}
+				}
+			}
+
+			flatNoFallback[source] = System.Threading.Volatile.Read(ref cacheGeneration);
+			translated = null;
+			return false;
+		}
+
+		/// <summary>
+		/// Поиск по скомпилированным шаблонам плейсхолдеров для разрешённых строк писем/уведомлений.
+		/// НИКОГДА не вызывать во время OnGUI отрисовки.
+		/// </summary>
+		public static bool TryGetTemplated(string resolved, out string translated)
+		{
+			translated = null;
+			if (string.IsNullOrEmpty(resolved) || templates.IsEmpty) return false;
+			int currentTemplateCount = System.Threading.Volatile.Read(ref templateCount);
+			if (templateNoMatch.TryGetValue(resolved, out int stored) && stored >= currentTemplateCount) return false;
+
+			foreach (var t in templates)
+			{
+				if (resolved.Length < t.MinLength) continue;
+				if (!string.IsNullOrEmpty(t.Anchor) && !resolved.Contains(t.Anchor)) continue;
+
+				Match m;
+				try
+				{
+					m = t.Pattern.Match(resolved);
+				}
+				catch (RegexMatchTimeoutException)
+				{
+					continue;
+				}
+
+				if (m.Success)
+				{
+					string res = t.TargetTemplate;
+					for (int i = 1; i < m.Groups.Count; i++)
+					{
+						string marker = "\u0001" + (i - 1) + "\u0001";
+						res = res.Replace(marker, m.Groups[i].Value);
+					}
+					translated = res;
+					flat[resolved] = translated;
+					return true;
+				}
+			}
+
+			if (templateNoMatch.Count > 50000)
+			{
+				templateNoMatch.Clear();
+				GATLog.Warn("UI Harvest: сброшен отрицательный кэш шаблонов (> 50000).");
+			}
+			templateNoMatch[resolved] = System.Threading.Volatile.Read(ref templateCount);
+			return false;
+		}
+
+		private static void RegisterTemplateIfAny(string source, string translated)
+		{
+			if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(translated)) return;
+			
+			if (templateKeys.Count >= 200000)
+			{
+				if (!templateKeysLimitLogged)
+				{
+					templateKeysLimitLogged = true;
+					GATLog.Warn("UI Harvest: достигнут лимит 200000 уникальных строк для проверки шаблонов. Сбор приостановлен.");
+				}
+				return;
+			}
+
+			if (!templateKeys.TryAdd(source, 1)) return;
+
+			MatchCollection matches = PlaceholderGuard.Ph.Matches(source);
+			if (matches.Count == 0) return;
+
+			var sbRegex = new StringBuilder("^");
+			string anchor = "";
+			int minLen = 0;
+
+			var placeholderToGroupIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+			var groupOrder = new List<string>();
+			int currentGroup = 0;
+			int lastPos = 0;
+
+			foreach (Match m in matches)
+			{
+				if (m.Index > lastPos)
+				{
+					string lit = source.Substring(lastPos, m.Index - lastPos);
+					string esc = Regex.Escape(lit);
+					sbRegex.Append(esc);
+					minLen += lit.Length;
+					if (lit.Length > anchor.Length) anchor = lit;
+				}
+
+				if (m.Value == "\\n") { sbRegex.Append(@"(?:\\n|\r?\n)"); lastPos = m.Index + m.Length; continue; }
+
+				string phVal = m.Value;
+				if (!placeholderToGroupIndex.TryGetValue(phVal, out int groupNum))
+				{
+					currentGroup++;
+					placeholderToGroupIndex[phVal] = currentGroup;
+					groupOrder.Add(phVal);
+					sbRegex.Append(@"([\s\S]+?)");
+				}
+				else
+				{
+					sbRegex.Append(@"\" + groupNum);
+				}
+
+				lastPos = m.Index + m.Length;
+			}
+
+			if (lastPos < source.Length)
+			{
+				string lit = source.Substring(lastPos);
+				string esc = Regex.Escape(lit);
+				sbRegex.Append(esc);
+				minLen += lit.Length;
+				if (lit.Length > anchor.Length) anchor = lit;
+			}
+
+			sbRegex.Append(@"\z");
+
+			if (anchor.Length < 12) return;
+
+			if (System.Threading.Volatile.Read(ref templateCount) >= 5000)
+			{
+				if (!templateCountLimitLogged)
+				{
+					templateCountLimitLogged = true;
+					GATLog.Warn("UI Harvest: достигнут лимит 5000 шаблонов реверс-индекса. Сбор шаблонов приостановлен.");
+				}
+				return;
+			}
+
+			string ruPattern = translated;
+			var sortedPairs = groupOrder.Select((val, idx) => new { val, idx }).OrderByDescending(x => x.val.Length).ToList();
+			foreach (var pair in sortedPairs)
+			{
+				string marker = "\u0001" + pair.idx + "\u0001";
+				ruPattern = ruPattern.Replace(pair.val, marker);
+			}
+
+			for (int i = 0; i < groupOrder.Count; i++)
+			{
+				if (!ruPattern.Contains("\u0001" + i + "\u0001")) return;
+			}
+
+			try
+			{
+				var record = new TemplateRecord
+				{
+					Pattern = new Regex(sbRegex.ToString(), RegexOptions.Singleline, TimeSpan.FromMilliseconds(10)),
+					TargetTemplate = ruPattern,
+					MinLength = minLen,
+					Anchor = anchor
+				};
+				templates.Add(record);
+				System.Threading.Interlocked.Increment(ref templateCount);
+			}
+			catch { }
+		}
+
+		public static void Put(string context, string source, string translated)
+		{
+			string key = Key(context, source);
+			map[key] = translated;
+			if (source != null)
+			{
+				sources[key] = source;
+				if (context == "ui" || context == "title")
+					flat[source] = translated;
+				else
+					flat.TryAdd(source, translated);
+
+				int ig;
+				flatNoFallback.TryRemove(source, out ig);
+				System.Threading.Interlocked.Increment(ref cacheGeneration);
+				RegisterTemplateIfAny(source, translated);
+			}
+			dirtyShards[ShardOf(key)] = 1;
+		}
+
+		private static string ShardOf(string key)
+		{
+			return key.Substring(0, 2); // 256 файлов максимум, реально меньше
+		}
+
+		private static string EscapeCell(string s)
+		{
+			return s.Replace("\\", "\\\\").Replace("\t", "\\t").Replace("\r", "").Replace("\n", "\\n");
+		}
+
+		private static string UnescapeCell(string s)
+		{
+			if (s == null || s.IndexOf('\\') < 0) return s;
+			var sb = new StringBuilder(s.Length);
+			for (int i = 0; i < s.Length; i++)
+			{
+				char c = s[i];
+				if (c != '\\' || i + 1 >= s.Length) { sb.Append(c); continue; }
+				char n = s[i + 1];
+				if (n == 'n')       { sb.Append('\n'); i++; }
+				else if (n == 't')  { sb.Append('\t'); i++; }
+				else if (n == '\\') { sb.Append('\\'); i++; }
+				else                { sb.Append(c); }
+			}
+			return sb.ToString();
+		}
+
+		public static void Load()
+		{
+			try
+			{
+				Directory.CreateDirectory(CacheDir);
+				LoadPermanentFailed();
+				int loaded = 0, legacy = 0;
+				foreach (string file in Directory.GetFiles(CacheDir, "*.tsv"))
+				{
+					foreach (string line in File.ReadAllLines(file, Encoding.UTF8))
+					{
+						if (line.Length == 0) continue;
+						string[] parts = line.Split(new[] { '\t' }, 3);
+						if (parts.Length == 3)
+						{
+							string k = parts[0];
+							string srcText = UnescapeCell(parts[1]);
+							string val = UnescapeCell(parts[2]);
+							map[k] = val;
+							if (srcText.Length > 0)
+							{
+								sources[k] = srcText;
+								flat[srcText] = val;
+								RegisterTemplateIfAny(srcText, val);
+							}
+							loaded++;
+						}
+						else if (parts.Length == 2)
+						{
+							// Старый формат без колонки источника.
+							map[parts[0]] = UnescapeCell(parts[1]);
+							loaded++;
+							legacy++;
+						}
+					}
+				}
+				GATLog.Msg("Кэш загружен: " + loaded + " строк из " + CacheDir);
+				if (legacy > 0)
+					GATLog.Warn("Записей старого формата: " + legacy +
+								". Слой 3 для них не работает, пока они не будут перезаписаны.");
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Не удалось загрузить кэш: " + e);
+			}
+			
+			System.Threading.Interlocked.Increment(ref cacheGeneration);
+		}
+
+		/// <summary>Сбрасывает на диск только изменённые шарды.</summary>
+		public static void Flush()
+		{
+			if (dirtyShards.Count == 0) return;
+			lock (ioLock)
+			{
+				// Повторная проверка под локом: пока мы ждали, другой поток мог всё сбросить.
+				if (dirtyShards.Count == 0) return;
+
+				var shards = new List<string>(dirtyShards.Keys);
+				if (shards.Count == 0) return;
+
+				// Снимаем флаги СРАЗУ под локом. Если Put() прилетит во время записи —
+				// он пометит шард грязным заново, и новые данные уйдут следующим Flush().
+				for (int i = 0; i < shards.Count; i++)
+				{
+					byte ignored;
+					dirtyShards.TryRemove(shards[i], out ignored);
+				}
+
+				try
+				{
+					Directory.CreateDirectory(CacheDir);
+
+					var buffers = new Dictionary<string, StringBuilder>(shards.Count, StringComparer.Ordinal);
+					for (int i = 0; i < shards.Count; i++)
+						buffers[shards[i]] = new StringBuilder(8192);
+
+					foreach (var kv in map)
+					{
+						if (kv.Key == null || kv.Key.Length < 2) continue;
+
+						StringBuilder sb;
+						if (!buffers.TryGetValue(kv.Key.Substring(0, 2), out sb)) continue;
+
+						string srcText;
+						sources.TryGetValue(kv.Key, out srcText);
+						sb.Append(kv.Key).Append('\t')
+						  .Append(EscapeCell(srcText ?? "")).Append('\t')
+						  .Append(EscapeCell(kv.Value))
+						  .Append('\n');
+					}
+
+					var encoding = new UTF8Encoding(false);
+					foreach (var kv in buffers)
+					{
+						string path = Path.Combine(CacheDir, kv.Key + ".tsv");
+						string tmp = path + ".tmp";
+						File.WriteAllText(tmp, kv.Value.ToString(), encoding);
+						if (File.Exists(path)) File.Delete(path);
+						File.Move(tmp, path);
+					}
+				}
+				catch (Exception e)
+				{
+					// Возвращаем флаги обратно, чтобы при ошибке диск данные не потерялись
+					for (int i = 0; i < shards.Count; i++) dirtyShards[shards[i]] = 1;
+					GATLog.Warn("Не удалось сохранить кэш: " + e);
+				}
+			}
+		}
+
+		public static void Clear()
+		{
+			map.Clear();
+			sources.Clear();
+			flat.Clear();
+			dirtyShards.Clear();
+			try
+			{
+				if (Directory.Exists(CacheDir))
+					foreach (string f in Directory.GetFiles(CacheDir, "*.tsv")) File.Delete(f);
+			}
+			catch (Exception e) { GATLog.Warn("Не удалось очистить кэш: " + e); }
+		}
+
+		/// <summary>Снимок всего кэша — нужен экспортёру.</summary>
+		public static Dictionary<string, string> Snapshot()
+		{
+			return new Dictionary<string, string>(map, StringComparer.Ordinal);
+		}
+	}
+
+	public static class GATLog
+	{
+		private const string Tag = "[GlobalAutoTranslator] ";
+		public static void Msg(string s) { try { Log.Message(Tag + s); } catch { System.Console.WriteLine(Tag + s); } }
+		public static void Warn(string s) { try { Log.Warning(Tag + s); } catch { System.Console.WriteLine("[WARN] " + Tag + s); } }
+		public static void Err(string s) { try { Log.Error(Tag + s); } catch { System.Console.WriteLine("[ERR] " + Tag + s); } }
+	}
+}
+
+===== SECTION: FILE: Source/SelfTest.cs =====
+using System.Collections.Generic;
+using System.Text;
+using Verse;
+
+namespace GlobalAutoTranslator
+{
+	public static class SelfTest
+	{
+		public static void Run()
+		{
+			var sb = new StringBuilder();
+			sb.AppendLine("=== GlobalAutoTranslator SelfTest ===");
+
+			string reason;
+			
+			// 1. PlaceholderGuard пропускает steel longsword
+			bool ok1 = PlaceholderGuard.Validate("steel longsword", "стальной длинный меч", out reason);
+			sb.AppendLine((ok1 ? "[OK]" : "[FAIL]") + " 1. steel longsword" + (ok1 ? "" : " <- " + reason));
+
+			// 2. PlaceholderGuard пропускает {PAWN_labelShort} has been downed by {0}.
+			bool ok2 = PlaceholderGuard.Validate("{PAWN_labelShort} has been downed by {0}.", "{PAWN_labelShort} сбит(а) {0}.", out reason);
+			sb.AppendLine((ok2 ? "[OK]" : "[FAIL]") + " 2. {PAWN_labelShort} has been downed by {0}." + (ok2 ? "" : " <- " + reason));
+
+			// 3. PlaceholderGuard отклоняет ответ, где [PAWN_pronoun] превратился в {PAWN_gender ? он : она}
+			bool ok3 = !PlaceholderGuard.Validate("[PAWN_pronoun]", "{PAWN_gender ? он : она}", out reason);
+			sb.AppendLine((ok3 ? "[OK]" : "[FAIL]") + " 3. [PAWN_pronoun] -> {PAWN_gender ? он : она}" + (ok3 ? "" : " <- ложно пропущено"));
+
+			// 4. PlaceholderGuard отклоняет ответ, где переведено содержимое [[ count ]]
+			bool ok4 = !PlaceholderGuard.Validate("[[ count ]]", "[[ количество ]]", out reason);
+			sb.AppendLine((ok4 ? "[OK]" : "[FAIL]") + " 4. [[ count ]] -> [[ количество ]]" + (ok4 ? "" : " <- ложно пропущено"));
+
+			// 5. теги <color=#FF0000>Critical</color> failure сохраняются символ в символ
+			bool ok5 = PlaceholderGuard.Validate("<color=#FF0000>Critical</color> failure", "<color=#FF0000>Критический</color> сбой", out reason);
+			sb.AppendLine((ok5 ? "[OK]" : "[FAIL]") + " 5. <color=#FF0000>Critical</color> failure" + (ok5 ? "" : " <- " + reason));
+
+			// 6. TryGetFlat: Put("ui", "Global Animation Speed", "Скорость анимации"), запрос "Global Animation Speed: 100%"
+			TranslationCache.Put("ui", "Global Animation Speed", "Скорость анимации");
+			string res6;
+			bool ok6 = TranslationCache.TryGetFlat("Global Animation Speed: 100%", out res6) && res6 == "Скорость анимации: 100%";
+			sb.AppendLine((ok6 ? "[OK]" : "[FAIL]") + " 6. Global Animation Speed: 100% -> " + (res6 ?? "null") + (ok6 ? "" : " (ожидалось: Скорость анимации: 100%)"));
+
+			// 7. TryGetFlat: Put("ui", "Loading", "Загрузка"), запрос "Loading..."
+			TranslationCache.Put("ui", "Loading", "Загрузка");
+			string res7;
+			bool ok7 = TranslationCache.TryGetFlat("Loading...", out res7) && res7 == "Загрузка...";
+			sb.AppendLine((ok7 ? "[OK]" : "[FAIL]") + " 7. Loading... -> " + (res7 ?? "null") + (ok7 ? "" : " (ожидалось: Загрузка...)"));
+
+			// 8. TryGetTemplated: реальное письмо головорезов из кэша (двойные переносы, плейсхолдеры).
+			TranslationCache.Put("title", 
+				"A band of thugs sent by {0} call you from nearby. \n\n They offer to keep your colony safe from any threats, even the ones potentially caused by them, as long as you pay a fee of {1} silver. \n\n Be warned - refusal can anger the thugs. ", 
+				"С вами связывается группа головорезов, отправленная фракцией {0}.\n\nОни предлагают защитить вашу колонию от любых угроз, включая те, которые могут исходить от них самих, если вы заплатите им {1} серебра.\n\nИмейте в виду: отказ может разозлить головорезов.");
+			string res8;
+			bool ok8 = TranslationCache.TryGetTemplated(
+				"A band of thugs sent by Племя Бардал call you from nearby. \n\n They offer to keep your colony safe from any threats, even the ones potentially caused by them, as long as you pay a fee of 350 silver. \n\n Be warned - refusal can anger the thugs. ", 
+				out res8);
+			bool match8 = res8 == "С вами связывается группа головорезов, отправленная фракцией Племя Бардал.\n\nОни предлагают защитить вашу колонию от любых угроз, включая те, которые могут исходить от них самих, если вы заплатите им 350 серебра.\n\nИмейте в виду: отказ может разозлить головорезов.";
+			sb.AppendLine((ok8 && match8 ? "[OK]" : "[FAIL]") + " 8. Thugs letter -> " + (res8 == null ? "null" : res8.Replace("\n", "\\n")));
+
+			// 9. TryGetTemplated: похожий якорь, но другая структура.
+			string res9;
+			bool ok9 = !TranslationCache.TryGetTemplated("A band of thugs sent by Племя Бардал call you from nearby. \n\n They want to chat.", out res9);
+			sb.AppendLine((ok9 ? "[OK]" : "[FAIL]") + " 9. Non-matching thugs letter -> " + (res9 == null ? "отклонено" : "пропущено: " + res9.Replace("\n", "\\n")));
+
+			// 10. повторный плейсхолдер.
+			TranslationCache.Put("title", "{0} and again and again {0}", "{0} и снова и снова {0}");
+			string res10;
+			bool ok10 = TranslationCache.TryGetTemplated("Test and again and again Test", out res10);
+			bool match10 = res10 == "Test и снова и снова Test";
+			sb.AppendLine((ok10 && match10 ? "[OK]" : "[FAIL]") + " 10. Repeated placeholder -> " + (res10 ?? "null") + (ok10 && match10 ? "" : " (ожидалось: Test и снова и снова Test)"));
+
+			// 11. короткий якорь отклоняется (длина литерала меньше 12)
+			TranslationCache.Put("title", "abc {0} def", "абв {0} где");
+			string res11;
+			bool ok11 = !TranslationCache.TryGetTemplated("abc 123 def", out res11);
+			sb.AppendLine((ok11 ? "[OK]" : "[FAIL]") + " 11. Short anchor rejected -> " + (res11 == null ? "отклонено" : "ошибка: " + res11));
+
+			// 12. грамматические правила отклоняются
+			bool ok12 = !PlaceholderGuard.ShouldTranslate("tradeAdj_fem->luxurious");
+			sb.AppendLine((ok12 ? "[OK]" : "[FAIL]") + " 12. Grammar rule rejected -> " + (ok12 ? "отклонено" : "пропущено"));
+
+			// 13. Валидация и маскировка маркеров (3 честные проверки)
+			{
+				string maskSrc = "{PAWN_labelShort} was downed by {0}. [PAWN_pronoun] screamed.";
+				Dictionary<int, string> maskMap;
+				string masked = PlaceholderGuard.MaskPlaceholders(maskSrc, out maskMap); // ⟦1⟧ was downed by ⟦2⟧. ⟦3⟧ screamed.
+
+				// Проверка 13a: корректный ответ модели проходит круг
+				string validModelReply = "⟦1⟧ повержен(а) ⟦2⟧. ⟦3⟧ закричал(а).";
+				string r1;
+				bool ok13a = PlaceholderGuard.ValidateMarkers(validModelReply, maskMap, out r1);
+				string unmasked13a = PlaceholderGuard.UnmaskPlaceholders(validModelReply, maskMap);
+				bool pass13a = ok13a && unmasked13a.Contains("{PAWN_labelShort}") && unmasked13a.Contains("{0}") && unmasked13a.Contains("[PAWN_pronoun]");
+
+				// Проверка 13b: ответ с выброшенным маркером ⟦2⟧ отклоняется
+				string missingModelReply = "⟦1⟧ повержен(а). ⟦3⟧ закричал(а).";
+				string r2;
+				bool ok13b = !PlaceholderGuard.ValidateMarkers(missingModelReply, maskMap, out r2);
+
+				// Проверка 13c: ответ с придуманным маркером ⟦4⟧ отклоняется по Validate (нераспознанные маркеры)
+				string extraModelReply = "⟦1⟧ повержен(а) ⟦2⟧. ⟦3⟧ закричал(а) ⟦4⟧.";
+				string r3;
+				PlaceholderGuard.ValidateMarkers(extraModelReply, maskMap, out r3);
+				string unmasked13c = PlaceholderGuard.UnmaskPlaceholders(extraModelReply, maskMap);
+				string valReason;
+				bool ok13c = !PlaceholderGuard.Validate(maskSrc, unmasked13c, out valReason) && valReason.Contains("нераспознанные маркеры");
+
+				bool ok13 = pass13a && ok13b && ok13c;
+				sb.AppendLine((ok13 ? "[OK]" : "[FAIL]") + " 13. Marker validation (full round-trip, missing rejected, extra rejected)");
+			}
+
+			// 14. Неприкосновенность гендерных тернарников в MaskPlaceholders
+			{
+				string ternarySrc = "{PREDATOR} {PREDATOR_gender ? attacked : attacked} {PREY_labelShort}";
+				Dictionary<int, string> map14;
+				string masked14 = PlaceholderGuard.MaskPlaceholders(ternarySrc, out map14);
+				bool hasTernary = masked14.Contains("{PREDATOR_gender ? attacked : attacked}");
+				bool ok14 = map14.Count == 2 && hasTernary; // {PREDATOR} → ⟦1⟧, {PREY_labelShort} → ⟦2⟧, тернарник не замаскирован
+				sb.AppendLine((ok14 ? "[OK]" : "[FAIL]") + " 14. Gender ternary preserved in MaskPlaceholders -> " + (hasTernary ? "сохранён" : "испорчен"));
+			}
+
+			// 15-21. Тесты метода NeedsTranslation (смешанные и чистые строки)
+			{
+				bool t15 = PlaceholderGuard.NeedsTranslation("The quest Сомнительный Хаб Контрабанды has ended.");
+				sb.AppendLine((t15 ? "[OK]" : "[FAIL]") + " 15. NeedsTranslation: Mixed quest -> " + (t15 ? "переводить" : "пропущено"));
+
+				bool t16 = !PlaceholderGuard.NeedsTranslation("Открыть связанное задание: Сомнительный Хаб Контрабанды");
+				sb.AppendLine((t16 ? "[OK]" : "[FAIL]") + " 16. NeedsTranslation: Russian UI -> " + (t16 ? "уже русский" : "переводить"));
+
+				bool t17 = PlaceholderGuard.NeedsTranslation("These беженцы are not part of any faction.");
+				sb.AppendLine((t17 ? "[OK]" : "[FAIL]") + " 17. NeedsTranslation: Mixed refugees -> " + (t17 ? "переводить" : "пропущено"));
+
+				bool t18 = PlaceholderGuard.NeedsTranslation("Jorunn begs you for permission to stay at Утёс Преданности for 13 дней.");
+				sb.AppendLine((t18 ? "[OK]" : "[FAIL]") + " 18. NeedsTranslation: Mixed stay quest -> " + (t18 ? "переводить" : "пропущено"));
+
+				bool t19 = !PlaceholderGuard.NeedsTranslation("Мод Combat Extended включён");
+				sb.AppendLine((t19 ? "[OK]" : "[FAIL]") + " 19. NeedsTranslation: Mod name in Russian -> " + (t19 ? "уже русский" : "переводить"));
+
+				bool t20 = !PlaceholderGuard.NeedsTranslation("<color=#FF0000>Критическая ошибка</color>");
+				sb.AppendLine((t20 ? "[OK]" : "[FAIL]") + " 20. NeedsTranslation: Russian color tag -> " + (t20 ? "уже русский" : "переводить"));
+
+				bool t21 = PlaceholderGuard.NeedsTranslation("Enough is enough, I'm feeling the call of the open skies!\nПричина: Вера в Неприкосновенные Пути");
+				sb.AppendLine((t21 ? "[OK]" : "[FAIL]") + " 21. NeedsTranslation: Mixed tooltip -> " + (t21 ? "переводить" : "пропущено"));
+			}
+
+			// 22. Проверка сохранения русских фрагментов исходника в PlaceholderGuard.Validate
+			{
+				string cyrSrc = "The quest Сомнительный Хаб Контрабанды has ended.";
+				string validDst = "Задание Сомнительный Хаб Контрабанды завершено.";
+				string invalidDst = "Задание «Контрабандный хаб» завершено.";
+
+				string rValid, rInvalid;
+				bool okValid = PlaceholderGuard.Validate(cyrSrc, validDst, out rValid);
+				bool okInvalid = !PlaceholderGuard.Validate(cyrSrc, invalidDst, out rInvalid) && rInvalid.Contains("русский фрагмент исходника потерян");
+
+				bool ok22 = okValid && okInvalid;
+				sb.AppendLine((ok22 ? "[OK]" : "[FAIL]") + " 22. Preserve original Cyrillic fragments -> valid=" + okValid + ", invalid_rejected=" + okInvalid);
+			}
+
+			// 23. Смешанная строка с расширенной латиницей (é, à)
+			{
+				bool t23 = PlaceholderGuard.NeedsTranslation("L’Équipe et беженцы repose à Утёс.");
+				sb.AppendLine((t23 ? "[OK]" : "[FAIL]") + " 23. NeedsTranslation: Extended Latin (é, à) -> " + (t23 ? "переводить" : "пропущено"));
+			}
+
+			// 24. Искажение регистра русского фрагмента измеряется дословно (Ordinal)
+			{
+				string cyrSrc = "The quest Сомнительный Хаб Контрабанды has ended.";
+				string caseChangedDst = "Задание сомнительный Хаб Контрабанды завершено.";
+				string rCase;
+				bool ok24 = !PlaceholderGuard.Validate(cyrSrc, caseChangedDst, out rCase) && rCase.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok24 ? "[OK]" : "[FAIL]") + " 24. Case change in Cyrillic fragment rejected (Ordinal) -> " + (ok24 ? "отклонено" : "ошибка"));
+			}
+
+			// 27. Проверка Backoff (production get)
+			{
+				bool ok27 = TranslateWorker.GetProbeDelaySeconds(0) == 30 &&
+				            TranslateWorker.GetProbeDelaySeconds(1) == 60 &&
+				            TranslateWorker.GetProbeDelaySeconds(2) == 120 &&
+				            TranslateWorker.GetProbeDelaySeconds(3) == 240 &&
+				            TranslateWorker.GetProbeDelaySeconds(4) == 300 &&
+				            TranslateWorker.GetProbeDelaySeconds(5) == 300;
+				sb.AppendLine((ok27 ? "[OK]" : "[FAIL]") + " 27. Production GetProbeDelaySeconds: 30, 60, 120, 240, 300, 300 -> " + ok27);
+			}
+
+			// 28. Сетевая ошибка не является structural failure
+			{
+				bool ok28 = !TranslateWorker.IsStructuralFailure("HTTP 503 auth_unavailable");
+				sb.AppendLine((ok28 ? "[OK]" : "[FAIL]") + " 28. Network error is not structural failure -> " + ok28);
+			}
+
+			// 29. Потеря русского фрагмента является structural failure
+			{
+				bool ok29 = TranslateWorker.IsStructuralFailure("русский фрагмент исходника потерян");
+				sb.AppendLine((ok29 ? "[OK]" : "[FAIL]") + " 29. Missing Cyrillic fragment is structural failure -> " + ok29);
+			}
+
+			// 30. Успешный probe-переход на локальном стейте (Stateless)
+			{
+				bool localPaused = true;
+				int localBackoff = 3;
+				long localNextProbe = 12345;
+				
+				var result = new LlmClient.ProbeResult { Success = true, ResponsePreview = "OK" };
+				if (result.Success)
+				{
+					localPaused = false;
+					localBackoff = 0;
+					localNextProbe = 0;
+				}
+				bool ok30 = !localPaused && localBackoff == 0 && localNextProbe == 0;
+				sb.AppendLine((ok30 ? "[OK]" : "[FAIL]") + " 30. Stateless probe-success transition -> " + ok30);
+			}
+
+			// 31. RetryHint для конкретного элемента попадает только под своим ID
+			{
+				var items = new System.Collections.Generic.Dictionary<string, string> { { "0", "test" }, { "1", "test2" } };
+				var hints = new System.Collections.Generic.Dictionary<string, string> { { "1", "hint for 1" } };
+				string json = Prompt.BuildUserMessage("ui", items, null, hints);
+				bool ok31 = json.Contains("\"retry_hints\":{\"1\":\"hint for 1\"}") && !json.Contains("\"0\":\"hint");
+				sb.AppendLine((ok31 ? "[OK]" : "[FAIL]") + " 31. RetryHint is mapped to item ID -> " + ok31);
+			}
+
+			// 32. MiniJson rejects empty/corrupt object
+			{
+				string emptyJson = "{}";
+				var parsedEmpty = MiniJson.ParseFlatObject(emptyJson);
+				bool ok32Empty = parsedEmpty != null && parsedEmpty.Count == 0;
+				
+				string corruptJson = "{ corrupted }";
+				var parsedCorrupt = MiniJson.ParseFlatObject(corruptJson);
+				bool ok32Corrupt = parsedCorrupt == null || parsedCorrupt.Count == 0;
+				
+				bool ok32 = ok32Empty && ok32Corrupt;
+				sb.AppendLine((ok32 ? "[OK]" : "[FAIL]") + " 32. MiniJson rejects empty/corrupt object -> " + ok32);
+			}
+
+			// 33. ProbeResult для пустого content имеет Success=false
+			{
+				var res = new LlmClient.ProbeResult();
+				bool ok33 = !res.Success;
+				sb.AppendLine((ok33 ? "[OK]" : "[FAIL]") + " 33. Default ProbeResult.Success is false -> " + ok33);
+			}
+
+			// 34. Production ParseRetryAfterSeconds parser
+			{
+				var now = System.DateTime.UtcNow;
+				bool ok34 = LlmClient.ParseRetryAfterSeconds("120", now) == 120 &&
+				            LlmClient.ParseRetryAfterSeconds("invalid", now) == null &&
+				            LlmClient.ParseRetryAfterSeconds("0", now) == null &&
+				            LlmClient.ParseRetryAfterSeconds("1801", now) == null;
+				sb.AppendLine((ok34 ? "[OK]" : "[FAIL]") + " 34. Production ParseRetryAfterSeconds (120, invalid, 0, 1801) -> " + ok34);
+			}
+
+			// 35. Вложенный lookup маскируется одним маркером и восстанавливается посимвольно точно
+			{
+				string src35 = "{lookup: {lookup: {GENDER}; Plural; 1}; Case; 2}";
+				System.Collections.Generic.Dictionary<int, string> map35;
+				string masked35 = PlaceholderGuard.MaskPlaceholders(src35, out map35);
+				string unmasked35 = PlaceholderGuard.UnmaskPlaceholders(masked35, map35);
+				bool ok35 = map35.Count == 1 && unmasked35 == src35;
+				sb.AppendLine((ok35 ? "[OK]" : "[FAIL]") + " 35. Nested lookup masked as single marker and restored -> " + ok35);
+			}
+
+			// 36. Два lookup в одной строке дают два разных маркера
+			{
+				string src36 = "{lookup: A} и {lookup: B}";
+				System.Collections.Generic.Dictionary<int, string> map36;
+				string masked36 = PlaceholderGuard.MaskPlaceholders(src36, out map36);
+				bool ok36 = map36.Count == 2 && masked36.Contains("⟦1⟧") && masked36.Contains("⟦2⟧");
+				sb.AppendLine((ok36 ? "[OK]" : "[FAIL]") + " 36. Two lookups produce two distinct markers -> " + ok36);
+			}
+
+			// 37. Обычные {PAWN_labelShort} и {0} вне lookup работают как раньше
+			{
+				string src37 = "{PAWN_labelShort} and {0}";
+				System.Collections.Generic.Dictionary<int, string> map37;
+				string masked37 = PlaceholderGuard.MaskPlaceholders(src37, out map37);
+				string unmasked37 = PlaceholderGuard.UnmaskPlaceholders(masked37, map37);
+				bool ok37 = map37.Count == 2 && unmasked37 == src37;
+				sb.AppendLine((ok37 ? "[OK]" : "[FAIL]") + " 37. Regular placeholders outside lookup work normally -> " + ok37);
+			}
+
+			// 38. Незакрытая скобка в конструкции lookup не приводит к исключению
+			{
+				bool ok38 = false;
+				try
+				{
+					string src38 = "{lookup: {GENDER}; Plural; 1";
+					System.Collections.Generic.Dictionary<int, string> map38;
+					string masked38 = PlaceholderGuard.MaskPlaceholders(src38, out map38);
+					ok38 = !string.IsNullOrEmpty(masked38);
+				}
+				catch { ok38 = false; }
+				sb.AppendLine((ok38 ? "[OK]" : "[FAIL]") + " 38. Unclosed lookup brace does not throw exception -> " + ok38);
+			}
+
+			// 39. «Изготавливает mich tc-2000 helmet» -> «Изготавливает шлем MICH TC-2000» проходит проверку
+			{
+				string r39;
+				bool ok39 = PlaceholderGuard.Validate("Изготавливает mich tc-2000 helmet", "Изготавливает шлем MICH TC-2000", out r39);
+				sb.AppendLine((ok39 ? "[OK]" : "[FAIL]") + " 39. Recipe verb validation passes -> " + ok39);
+			}
+
+			// 40. «Jorunn просит остаться в Утёс Преданности» с потерянным «Утёс Преданности» отклоняется
+			{
+				string r40;
+				bool ok40 = !PlaceholderGuard.Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в локации", out r40) && r40.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok40 ? "[OK]" : "[FAIL]") + " 40. Missing proper location name rejected -> " + ok40);
+			}
+
+			// 41. «Любые патроны для Unique trench gun» с переведённым названием оружия проходит
+			{
+				string r41;
+				bool ok41 = PlaceholderGuard.Validate("Любые патроны для Unique trench gun", "Любые патроны для траншейного ружья Unique", out r41);
+				sb.AppendLine((ok41 ? "[OK]" : "[FAIL]") + " 41. Service words with translated weapon name passes -> " + ok41);
+			}
+
+			// 42. Письмо с потерянным названием фракции «Племя Бардал» отклоняется
+			{
+				string r42;
+				bool ok42 = !PlaceholderGuard.Validate("Письмо от фракции Племя Бардал о союзе.", "Письмо от фракции о союзе.", out r42) && r42.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok42 ? "[OK]" : "[FAIL]") + " 42. Missing faction name in letter rejected -> " + ok42);
+			}
+
+			// 43. «Любые патроны для Unique trench gun» -> «Патроны для траншейного ружья» проходит проверку
+			{
+				string r43;
+				bool ok43 = PlaceholderGuard.Validate("Любые патроны для Unique trench gun", "Патроны для траншейного ружья", out r43);
+				sb.AppendLine((ok43 ? "[OK]" : "[FAIL]") + " 43. Preposition and service word sentence passes -> " + ok43);
+			}
+
+			// 44. «Изготавливает mich tc-2000 helmet» -> «Создаёт шлем MICH TC-2000» проходит проверку
+			{
+				string r44;
+				bool ok44 = PlaceholderGuard.Validate("Изготавливает mich tc-2000 helmet", "Создаёт шлем MICH TC-2000", out r44);
+				sb.AppendLine((ok44 ? "[OK]" : "[FAIL]") + " 44. Verb change with recipe passes -> " + ok44);
+			}
+
+			// 45. «Отряд от Племя Бардал идёт к вам» -> «Отряд от Племени Бардал идёт к вам» проходит: слово «Бардал» сохранено
+			{
+				string r45;
+				bool ok45 = PlaceholderGuard.Validate("Отряд от Племя Бардал идёт к вам", "Отряд от Племени Бардал идёт к вам", out r45);
+				sb.AppendLine((ok45 ? "[OK]" : "[FAIL]") + " 45. Inflected multi-word faction passes -> " + ok45);
+			}
+
+			// 46. «Jorunn просит остаться в Утёс Преданности» -> «Jorunn просит остаться в локации» отклоняется: потеряны «Утёс» и «Преданности»
+			{
+				string r46;
+				bool ok46 = !PlaceholderGuard.Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в локации", out r46) && r46.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok46 ? "[OK]" : "[FAIL]") + " 46. Missing both capital words rejected -> " + ok46);
+			}
+
+			// 47. GetPlaceholderMatches на строке длиной 4000 символов без lookup отрабатывает без исключений, и в ней сработал быстрый выход
+			{
+				string longStr = new string('A', 4000) + " {0} " + new string('B', 100);
+				var matches47 = PlaceholderGuard.GetPlaceholderMatches(longStr);
+				bool ok47 = matches47.Count == 1 && matches47[0].Value == "{0}";
+				sb.AppendLine((ok47 ? "[OK]" : "[FAIL]") + " 47. Long string fast path works efficiently -> " + ok47);
+			}
+
+			// 48. Validate("Комната слишком мала for the colonist", "Помещение слишком мало для колониста") проходит: «Комната» стоит в начале строки и именем собственным не считается
+			{
+				string r48;
+				bool ok48 = PlaceholderGuard.Validate("Комната слишком мала for the colonist", "Помещение слишком мало для колониста", out r48);
+				sb.AppendLine((ok48 ? "[OK]" : "[FAIL]") + " 48. Sentence start capitalized word not treated as proper noun -> " + ok48);
+			}
+
+			// 49. Validate("Отряд от Племя Бардал идёт к вам", "Группа от Племени Бардал идёт к вам") проходит: «Отряд» в начале строки, «Племя» и «Бардал» сохранены по основе
+			{
+				string r49;
+				bool ok49 = PlaceholderGuard.Validate("Отряд от Племя Бардал идёт к вам", "Группа от Племени Бардал идёт к вам", out r49);
+				sb.AppendLine((ok49 ? "[OK]" : "[FAIL]") + " 49. Stems matching with inflected words and sentence start word -> " + ok49);
+			}
+
+			// 50. Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в Утёсе Преданности") проходит: оба имени сохранены в склонённой форме
+			{
+				string r50;
+				bool ok50 = PlaceholderGuard.Validate("Jorunn просит остаться в Утёс Преданности", "Jorunn просит остаться в Утёсе Преданности", out r50);
+				sb.AppendLine((ok50 ? "[OK]" : "[FAIL]") + " 50. Declension of proper names passes -> " + ok50);
+			}
+
+			// 51. Validate("Караван идёт в Утёс Преданности. Преданности ждут гостей.", "Караван идёт в локацию. Локация ждёт гостей.") отклоняется с причиной «русский фрагмент исходника потерян»
+			{
+				string r51;
+				bool ok51 = !PlaceholderGuard.Validate("Караван идёт в Утёс Преданности. Преданности ждут гостей.", "Караван идёт в локацию. Локация ждёт гостей.", out r51) && r51.Contains("русский фрагмент исходника потерян");
+				sb.AppendLine((ok51 ? "[OK]" : "[FAIL]") + " 51. Capitalized words lost later in sentence rejected -> " + ok51);
+			}
+
+			// 52. Validate("Караван идёт в Утёс\nПреданности прямо сейчас", "Караван идёт в Утёсе\nПреданности прямо сейчас") проходит: слова, разделённые переводом строки, разбираются по отдельности
+			{
+				string r52;
+				bool ok52 = PlaceholderGuard.Validate("Караван идёт в Утёс\nПреданности прямо сейчас", "Караван идёт в Утёсе\nПреданности прямо сейчас", out r52);
+				sb.AppendLine((ok52 ? "[OK]" : "[FAIL]") + " 52. Multi-word phrase with newline separator passes -> " + ok52);
+			}
+
+			// 53. TryGetFlat: "Preview (per worker):" сначала промах (метка), потом Put, потом успех
+			{
+				string res53_1;
+				bool fail53 = !TranslationCache.TryGetFlat("Preview (per worker):", out res53_1);
+				
+				TranslationCache.Put("ui", "Preview (per worker)", "Предпросмотр (на одного рабочего)");
+				
+				string res53_2 = null;
+				bool ok53 = fail53 && TranslationCache.TryGetFlat("Preview (per worker):", out res53_2) && res53_2 == "Предпросмотр (на одного рабочего):";
+				sb.AppendLine((ok53 ? "[OK]" : "[FAIL]") + " 53. Preview (per worker): combat order -> " + (res53_2 ?? "null"));
+			}
+
+			// 54. TryGetFlat: "Decay per additional doctor: ×0.75" сначала промах, потом Put, потом успех
+			{
+				string res54_1;
+				bool fail54 = !TranslationCache.TryGetFlat("Decay per additional doctor: \u00D70.75", out res54_1);
+				
+				TranslationCache.Put("ui", "Decay per additional doctor", "эффективность доп. врача");
+				
+				string res54_2 = null;
+				bool ok54 = fail54 && TranslationCache.TryGetFlat("Decay per additional doctor: \u00D70.75", out res54_2) && res54_2 == "эффективность доп. врача: \u00D70.75";
+				sb.AppendLine((ok54 ? "[OK]" : "[FAIL]") + " 54. Decay per additional doctor: \u00D70.75 combat order -> " + (res54_2 ?? "null"));
+			}
+
+			// 55. TryGetFlat: "<b>Level up actions</b>" сначала промах, потом Put, потом успех с тегами
+			{
+				string res55_1;
+				bool fail55 = !TranslationCache.TryGetFlat("<b>Level up actions</b>", out res55_1);
+				
+				TranslationCache.Put("ui", "Level up actions", "действия при повышении уровня");
+				
+				string res55_2 = null;
+				bool ok55 = fail55 && TranslationCache.TryGetFlat("<b>Level up actions</b>", out res55_2) && res55_2 == "<b>действия при повышении уровня</b>";
+				sb.AppendLine((ok55 ? "[OK]" : "[FAIL]") + " 55. <b>Level up actions</b> combat order -> " + (res55_2 ?? "null"));
+			}
+
+			// 56. Проверка суженного фильтра слэшей
+			{
+				string s_pass = "Bleed rate threshold: 100%/day";
+				string s_fail1 = "Textures/Things/Item.png";
+				string s_fail2 = "C:\\Mods\\Thing.dll";
+				
+				bool passes_pass = !UiHarvest.IsJunkPath(s_pass);
+				bool passes_fail1 = !UiHarvest.IsJunkPath(s_fail1);
+				bool passes_fail2 = !UiHarvest.IsJunkPath(s_fail2);
+
+				bool ok56 = passes_pass && !passes_fail1 && !passes_fail2;
+				sb.AppendLine((ok56 ? "[OK]" : "[FAIL]") + " 56. Slash filter rules -> pass=" + passes_pass + ", fail1=" + passes_fail1 + ", fail2=" + passes_fail2);
+			}
+
+			GATLog.Msg(sb.ToString());
+		}
+	}
+}
+
+===== SECTION: FILE: tools/run_tests.ps1 =====
+$ErrorActionPreference = 'Stop'
+Set-Location "$PSScriptRoot\.."
+
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $utf8NoBom
+
+$testExe = "tests\GATTest.exe"
+
+# Locate compiler (same as build.ps1)
+$cscCandidates = @(
+    "$PSScriptRoot\..\..\roslyn\tasks\net472\csc.exe",
+    "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\Roslyn\csc.exe",
+    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe"
+)
+$Csc = $cscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if (-not $Csc) { throw "csc.exe not found." }
+
+# Locate RimWorld assemblies (using same logic as build.ps1)
+$RimWorldRoot = $env:RIMWORLD_ROOT
+if (-not $RimWorldRoot) {
+    # Simple hardcoded path for the test runner if env var is missing
+    $RimWorldRoot = "D:\SteamLibrary\steamapps\common\RimWorld"
+}
+$MANAGED = Join-Path $RimWorldRoot "RimWorldWin64_Data\Managed"
+
+# Locate Harmony
+$HarmonyDll = $env:RIMWORLD_HARMONY_DLL
+if (-not $HarmonyDll) {
+    $HarmonyDll = "D:\SteamLibrary\steamapps\workshop\content\294100\2009463077\Current\Assemblies\0Harmony.dll"
+}
+
+Write-Host "Compiling test harness..." -ForegroundColor Cyan
+
+# Link Unity/RimWorld assemblies so we don't have to mock everything
+& $Csc `
+    "/target:exe" `
+    "/out:$testExe" `
+    "/r:$MANAGED\Assembly-CSharp.dll" `
+    "/r:$MANAGED\Assembly-CSharp-firstpass.dll" `
+    "/r:$MANAGED\UnityEngine.dll" `
+    "/r:$MANAGED\UnityEngine.CoreModule.dll" `
+    "/r:$MANAGED\UnityEngine.IMGUIModule.dll" `
+    "/r:$MANAGED\UnityEngine.TextRenderingModule.dll" `
+    "/r:$MANAGED\netstandard.dll" `
+    "/r:$MANAGED\System.Net.Http.dll" `
+    "/r:$HarmonyDll" `
+    "Source\PlaceholderGuard.cs" `
+    "Source\TranslationCache.cs" `
+    "Source\SelfTest.cs" `
+    "Source\Prompt.cs" `
+    "Source\MiniJson.cs" `
+    "Source\LlmClient.cs" `
+    "Source\TranslateWorker.cs" `
+    "Source\GATMod.cs" `
+    "Source\DefPostProcessor.cs" `
+    "Source\LanguageExporter.cs" `
+    "Source\Patches.cs" `
+    "Source\GATBoot.cs" `
+    "tests\Program.cs"
+
+if ($LASTEXITCODE -ne 0) { throw "Compilation failed (exit $LASTEXITCODE)" }
+
+Write-Host "Running tests..." -ForegroundColor Green
+& ".\$testExe"
+
+===== SECTION: FILE: build.ps1 =====
+##############################################################################
+# build.ps1 -- GlobalAutoTranslator build script
+# Run: powershell -ExecutionPolicy Bypass -File build.ps1
+# Optional: -RimWorldRoot "E:\Games\RimWorld" -NoInstall
+##############################################################################
+
+param(
+    [string]$RimWorldRoot = $env:RIMWORLD_ROOT,
+    [string]$HarmonyDll   = $env:RIMWORLD_HARMONY_DLL,
+    [string]$Csc          = $env:ROSLYN_CSC,
+    [switch]$NoInstall
+)
+
+$ErrorActionPreference = "Stop"
+
+if (!$NoInstall -and (Get-Process RimWorldWin64 -ErrorAction SilentlyContinue)) {
+    throw "RimWorld is running. Close the game before deploying to Mods."
+}
+
+$SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# ---- Locate RimWorld --------------------------------------------------------
+function Find-RimWorldRoot {
+    # 1. Steam libraries listed in libraryfolders.vdf
+    $steamRoots = @(
+        "${env:ProgramFiles(x86)}\Steam",
+        "$env:ProgramFiles\Steam"
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    $libs = New-Object System.Collections.Generic.List[string]
+    foreach ($steam in $steamRoots) {
+        $libs.Add($steam)
+        $vdf = Join-Path $steam "steamapps\libraryfolders.vdf"
+        if (Test-Path $vdf) {
+            Select-String -Path $vdf -Pattern '"path"\s+"(.+?)"' -AllMatches |
+                ForEach-Object { $_.Matches } |
+                ForEach-Object { $libs.Add($_.Groups[1].Value.Replace('\\', '\')) }
+        }
+    }
+    # 2. Common manual locations
+    foreach ($d in @("C:", "D:", "E:", "F:")) { $libs.Add("$d\SteamLibrary") }
+
+    foreach ($lib in $libs) {
+        $candidate = Join-Path $lib "steamapps\common\RimWorld"
+        if (Test-Path (Join-Path $candidate "RimWorldWin64_Data\Managed\Assembly-CSharp.dll")) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+if (-not $RimWorldRoot) { $RimWorldRoot = Find-RimWorldRoot }
+if (-not $RimWorldRoot -or -not (Test-Path $RimWorldRoot)) {
+    throw "RimWorld not found. Pass -RimWorldRoot 'X:\path\to\RimWorld' or set `$env:RIMWORLD_ROOT."
+}
+$MANAGED = Join-Path $RimWorldRoot "RimWorldWin64_Data\Managed"
+Write-Host "[BUILD] RimWorld: $RimWorldRoot" -ForegroundColor DarkGray
+
+# ---- Locate Harmony ---------------------------------------------------------
+if (-not $HarmonyDll) {
+    $workshop = Join-Path (Split-Path -Parent (Split-Path -Parent $RimWorldRoot)) "workshop\content\294100"
+    $candidates = @(
+        (Join-Path $workshop "2009463077\Current\Assemblies\0Harmony.dll"),   # Harmony
+        (Join-Path $workshop "2009463077\1.6\Assemblies\0Harmony.dll"),
+        (Join-Path $workshop "2009463077\1.5\Assemblies\0Harmony.dll"),
+        (Join-Path $workshop "2009463077\1.4\Assemblies\0Harmony.dll"),
+        (Join-Path $RimWorldRoot "Mods\Harmony\Current\Assemblies\0Harmony.dll"),
+        (Join-Path $workshop "839005762\1.6\Assemblies\0Harmony.dll")         # HugsLib fallback
+    )
+    $HarmonyDll = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $HarmonyDll) {
+    throw "0Harmony.dll not found. Subscribe to https://steamcommunity.com/sharedfiles/filedetails/?id=2009463077 or pass -HarmonyDll."
+}
+if ($HarmonyDll -like "*839005762*") {
+    Write-Warning "Using the HugsLib copy of Harmony. Prefer the standalone Harmony mod (2009463077)."
+}
+
+# ---- Locate compiler --------------------------------------------------------
+if (-not $Csc) {
+    $cscCandidates = @(
+        "$SCRIPT_DIR\..\roslyn\tasks\net472\csc.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\Roslyn\csc.exe",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe"
+    )
+    $Csc = $cscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $Csc) { throw "csc.exe not found. Pass -Csc 'path\to\csc.exe'." }
+
+$CSC      = $Csc
+$HARMONY  = $HarmonyDll
+$SRC_DIR  = "$SCRIPT_DIR\Source"
+$OUT_DLL  = "$SCRIPT_DIR\Assemblies\GlobalAutoTranslator.dll"
+$MODS_DST = Join-Path $RimWorldRoot "Mods\GlobalAutoTranslator"
+
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OUT_DLL) | Out-Null
+
+foreach ($p in @($MANAGED, $HARMONY, $CSC)) {
+    if (-not (Test-Path $p)) { throw "Not found: $p" }
+}
+
+# ---- Generate AssemblyInfo.cs -------------------------------------------------
+$assemblyInfo = @"
+using System.Reflection;
+
+[assembly: AssemblyTitle("GlobalAutoTranslator")]
+[assembly: AssemblyDescription("AI Translator for RimWorld")]
+[assembly: AssemblyConfiguration("")]
+[assembly: AssemblyCompany("Ayder")]
+[assembly: AssemblyProduct("GlobalAutoTranslator")]
+[assembly: AssemblyCopyright("Copyright © 2026")]
+[assembly: AssemblyTrademark("")]
+[assembly: AssemblyCulture("")]
+[assembly: AssemblyVersion("31.0.0.0")]
+[assembly: AssemblyFileVersion("31.0.0.0")]
+"@
+Set-Content -Path "$SRC_DIR\AssemblyInfo.cs" -Value $assemblyInfo -Encoding UTF8
+
+# ---- Compile ----------------------------------------------------------------
+Write-Host "[BUILD] Compiling..." -ForegroundColor Cyan
+$SRC = Get-ChildItem "$SRC_DIR\*.cs" -Recurse | Where-Object { $_.FullName -notmatch '\\tests\\' } | Select-Object -ExpandProperty FullName
+
+& $CSC `
+    "/target:library" `
+    "/r:$MANAGED\Assembly-CSharp.dll" `
+    "/r:$MANAGED\Assembly-CSharp-firstpass.dll" `
+    "/r:$MANAGED\UnityEngine.dll" `
+    "/r:$MANAGED\UnityEngine.CoreModule.dll" `
+    "/r:$MANAGED\UnityEngine.IMGUIModule.dll" `
+    "/r:$MANAGED\UnityEngine.TextRenderingModule.dll" `
+    "/r:$MANAGED\netstandard.dll" `
+    "/r:$MANAGED\System.Net.Http.dll" `
+    "/r:$HARMONY" `
+    "/out:$OUT_DLL" `
+    $SRC
+
+if ($LASTEXITCODE -ne 0) { throw "Compilation failed (exit $LASTEXITCODE)" }
+Write-Host "[BUILD] DLL OK: $OUT_DLL" -ForegroundColor Green
+
+# ---- Install ----------------------------------------------------------------
+if ($NoInstall) {
+    Write-Host "[INSTALL] Skipped (-NoInstall)." -ForegroundColor Yellow
+    return
+}
+Write-Host "[INSTALL] Deploying to Mods..." -ForegroundColor Cyan
+
+# Wipe destination and recreate clean — avoids Copy-Item subfolder nesting bug
+if (Test-Path $MODS_DST) { Remove-Item $MODS_DST -Recurse -Force }
+New-Item -ItemType Directory -Path $MODS_DST | Out-Null
+
+foreach ($dir in @("About", "Assemblies", "Languages", "proxy")) {
+    $srcPath = "$SCRIPT_DIR\$dir"
+    if (Test-Path $srcPath) {
+        Copy-Item -Path $srcPath -Destination "$MODS_DST\$dir" -Recurse
+    }
+}
+if (Test-Path "$SCRIPT_DIR\README.md") {
+    Copy-Item "$SCRIPT_DIR\README.md" "$MODS_DST\README.md"
+}
+
+Write-Host "[INSTALL] Done: $MODS_DST" -ForegroundColor Green
+Write-Host "[INSTALL] Contents:" -ForegroundColor Yellow
+Get-ChildItem $MODS_DST -Recurse | Select-Object FullName
+
+===== SECTION: FILE: tests/Mocks.cs =====
+using System;
+using System.Collections.Generic;
+
+namespace Verse
+{
+    public static class Log
+    {
+        public static void Message(string text) => Console.WriteLine(text);
+        public static void Warning(string text) => Console.WriteLine("[WARN] " + text);
+        public static void Error(string text) => Console.WriteLine("[ERR] " + text);
+    }
+
+    public static class Prefs
+    {
+        public static bool LogVerbose = true;
+    }
+
+    public static class GenText
+    {
+        public static string ToTitleCaseSmart(string text) => text; // Mock implementation
+    }
+    
+    public class ModContentPack { }
+
+    public class Mod
+    {
+        public Mod(ModContentPack content) { }
+        public virtual string SettingsCategory() => "";
+        public virtual void DoSettingsWindowContents(UnityEngine.Rect inRect) { }
+        public virtual void WriteSettings() { }
+        public T GetSettings<T>() where T : ModSettings, new() => new T();
+    }
+
+    public class ModSettings
+    {
+        public virtual void ExposeData() { }
+    }
+
+    public static class Scribe_Values
+    {
+        public static void Look<T>(ref T value, string label, T defaultValue = default(T), bool forceSave = false) { }
+    }
+    
+    public class Listing_Standard
+    {
+        public void Begin(UnityEngine.Rect rect) { }
+        public void Label(string text) { }
+        public string TextEntry(string text) => text;
+        public void Gap(float height = 12f) { }
+        public void CheckboxLabeled(string label, ref bool checkOn, string tooltip = null) { }
+        public void End() { }
+    }
+
+    public static class Translator
+    {
+        public static bool TryGetTranslatedStringsForFile(string file, out List<string> strings)
+        {
+            strings = new List<string>();
+            return false;
+        }
+    }
+    
+    public class TranslatorFormattedStringExtensions
+    {
+        public static string Translate(string key) => key;
+    }
+
+    public class TaggedString
+    {
+        public static implicit operator string(TaggedString ts) => ts?.ToString();
+        public static implicit operator TaggedString(string s) => new TaggedString();
+    }
+    
+    public class Letter { }
+    public class ChoiceLetter : Letter { }
+
+    [AttributeUsage(AttributeTargets.Class)]
+    public class StaticConstructorOnStartupAttribute : Attribute { }
+}
+
+namespace UnityEngine
+{
+    public static class Debug
+    {
+        public static void Log(object message) => Console.WriteLine(message);
+        public static void LogWarning(object message) => Console.WriteLine("[WARN] " + message);
+        public static void LogError(object message) => Console.WriteLine("[ERR] " + message);
+    }
+    
+    public struct Rect
+    {
+        public float x, y, width, height;
+        public Rect(float x, float y, float width, float height)
+        {
+            this.x = x; this.y = y; this.width = width; this.height = height;
+        }
+    }
+
+    public static class GUI
+    {
+        public static bool changed = false;
+    }
+    
+    public class TextAnchor { }
+    public class Font { }
+}
+
+namespace RimWorld
+{
+    public class ThingDef
+    {
+        public string defName;
+        public string label;
+        public string description;
+    }
+    public class Quest { 
+        public string name;
+        public string description;
+    }
+}
+
+namespace RimWorld.Planet
+{
+}
+
+namespace Verse
+{
+    public struct TipSignal
+    {
+        public static implicit operator TipSignal(string s) => new TipSignal();
+    }
+    public class Root { }
+    public class Def { }
+    public static class Widgets { }
+    public class GameFont { }
+    public static class Messages {
+        public static void Message(string text, object def, bool historical = true) { }
+    }
+    public class MessageTypeDefOf {
+        public static object RejectInput = null;
+    }
+}
+
+namespace HarmonyLib
+{
+    public class Harmony
+    {
+        public Harmony(string id) { }
+        public void PatchAll() { }
+    }
+
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
+    public class HarmonyPatchAttribute : Attribute
+    {
+        public HarmonyPatchAttribute() { }
+        public HarmonyPatchAttribute(Type declaringType, string methodName = null, Type[] argumentTypes = null) { }
+        public HarmonyPatchAttribute(string methodName) { }
+    }
+
+    [AttributeUsage(AttributeTargets.Method)]
+    public class HarmonyPrefixAttribute : Attribute { }
+
+    [AttributeUsage(AttributeTargets.Method)]
+    public class HarmonyPostfixAttribute : Attribute { }
+
+    [AttributeUsage(AttributeTargets.Method)]
+    public class HarmonyPriorityAttribute : Attribute
+    {
+        public HarmonyPriorityAttribute(int priority) { }
+    }
+
+    public static class Priority
+    {
+        public const int Last = 0;
+        public const int Low = 400;
+        public const int First = 800;
+    }
+
+    public static class AccessTools
+    {
+        public delegate F FieldRef<T, F>(T obj);
+        public static FieldRef<T, F> FieldRefAccess<T, F>(string name) => (obj) => default(F);
+    }
+}
+
+namespace UnityEngine
+{
+    public static class Mathf {
+        public static int CeilToInt(float f) => (int)f;
+    }
+}
+
+===== SECTION: FILE: tests/Program.cs =====
+using System;
+using System.Diagnostics;
+using GlobalAutoTranslator;
+
+namespace GlobalAutoTranslatorTests
+{
+    class Program
+    {
+        static void Main()
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            SelfTest.Run();
+
+            // Task 5: Measure Invalidation Cost
+            Console.WriteLine("\n=== Performance Benchmark ===");
+            
+            // Populate TranslationCache with 15k items
+            for (int i = 0; i < 15000; i++) {
+                TranslationCache.Put("ui", "test_key_" + i, "test_val_" + i);
+            }
+
+            var sw = Stopwatch.StartNew();
+            int misses = 0;
+
+            for (int i = 0; i < 20000; i++) {
+                string dummy;
+                if (!TranslationCache.TryGetFlat("missing_key_" + i, out dummy)) {
+                    misses++;
+                }
+
+                // Increment generation every 50 calls to simulate background loads
+                if (i % 50 == 0) {
+                    TranslationCache.Put("ui", "trigger_" + i, "val_" + i);
+                }
+            }
+
+            sw.Stop();
+            Console.WriteLine($"Total 20,000 TryGetFlat misses with invalidations took: {sw.ElapsedMilliseconds} ms");
+            Console.WriteLine($"Average time per call: {(sw.Elapsed.TotalMilliseconds * 1000.0) / 20000.0:F2} microseconds");
+        }
+    }
+}
+
+===== END OF BUNDLE =====

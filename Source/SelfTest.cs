@@ -393,6 +393,56 @@ namespace GlobalAutoTranslator
 				sb.AppendLine((ok52 ? "[OK]" : "[FAIL]") + " 52. Multi-word phrase with newline separator passes -> " + ok52);
 			}
 
+			// 53. TryGetFlat: "Preview (per worker):" сначала промах (метка), потом Put, потом успех
+			{
+				string res53_1;
+				bool fail53 = !TranslationCache.TryGetFlat("Preview (per worker):", out res53_1);
+				
+				TranslationCache.Put("ui", "Preview (per worker)", "Предпросмотр (на одного рабочего)");
+				
+				string res53_2 = null;
+				bool ok53 = fail53 && TranslationCache.TryGetFlat("Preview (per worker):", out res53_2) && res53_2 == "Предпросмотр (на одного рабочего):";
+				sb.AppendLine((ok53 ? "[OK]" : "[FAIL]") + " 53. Preview (per worker): combat order -> " + (res53_2 ?? "null"));
+			}
+
+			// 54. TryGetFlat: "Decay per additional doctor: ×0.75" сначала промах, потом Put, потом успех
+			{
+				string res54_1;
+				bool fail54 = !TranslationCache.TryGetFlat("Decay per additional doctor: \u00D70.75", out res54_1);
+				
+				TranslationCache.Put("ui", "Decay per additional doctor", "эффективность доп. врача");
+				
+				string res54_2 = null;
+				bool ok54 = fail54 && TranslationCache.TryGetFlat("Decay per additional doctor: \u00D70.75", out res54_2) && res54_2 == "эффективность доп. врача: \u00D70.75";
+				sb.AppendLine((ok54 ? "[OK]" : "[FAIL]") + " 54. Decay per additional doctor: \u00D70.75 combat order -> " + (res54_2 ?? "null"));
+			}
+
+			// 55. TryGetFlat: "<b>Level up actions</b>" сначала промах, потом Put, потом успех с тегами
+			{
+				string res55_1;
+				bool fail55 = !TranslationCache.TryGetFlat("<b>Level up actions</b>", out res55_1);
+				
+				TranslationCache.Put("ui", "Level up actions", "действия при повышении уровня");
+				
+				string res55_2 = null;
+				bool ok55 = fail55 && TranslationCache.TryGetFlat("<b>Level up actions</b>", out res55_2) && res55_2 == "<b>действия при повышении уровня</b>";
+				sb.AppendLine((ok55 ? "[OK]" : "[FAIL]") + " 55. <b>Level up actions</b> combat order -> " + (res55_2 ?? "null"));
+			}
+
+			// 56. Проверка суженного фильтра слэшей
+			{
+				string s_pass = "Bleed rate threshold: 100%/day";
+				string s_fail1 = "Textures/Things/Item.png";
+				string s_fail2 = "C:\\Mods\\Thing.dll";
+				
+				bool passes_pass = !UiHarvest.IsJunkPath(s_pass);
+				bool passes_fail1 = !UiHarvest.IsJunkPath(s_fail1);
+				bool passes_fail2 = !UiHarvest.IsJunkPath(s_fail2);
+
+				bool ok56 = passes_pass && !passes_fail1 && !passes_fail2;
+				sb.AppendLine((ok56 ? "[OK]" : "[FAIL]") + " 56. Slash filter rules -> pass=" + passes_pass + ", fail1=" + passes_fail1 + ", fail2=" + passes_fail2);
+			}
+
 			GATLog.Msg(sb.ToString());
 		}
 	}

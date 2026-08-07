@@ -39,6 +39,33 @@ namespace GlobalAutoTranslator
 			int len = s.Length;
 			if (len < 2 || len > 600) return;
 
+			// Срезание обрамляющих тегов
+			if (s.StartsWith("<") && s.EndsWith(">") && s.Length > 2)
+			{
+				int firstClose = s.IndexOf('>');
+				if (firstClose > 1 && firstClose < s.Length - 2)
+				{
+					string openTag = s.Substring(0, firstClose + 1);
+					if (!openTag.StartsWith("</"))
+					{
+						int eqIdx = openTag.IndexOf('=');
+						string tagName = eqIdx > 0 ? openTag.Substring(1, eqIdx - 1) : openTag.Substring(1, openTag.Length - 2);
+						string closeTag = "</" + tagName + ">";
+						if (s.EndsWith(closeTag))
+						{
+							string inner = s.Substring(openTag.Length, s.Length - openTag.Length - closeTag.Length);
+							lock (seen)
+							{
+								if (seen.Count < MaxSeenCapacity && !seen.Contains(s))
+									seen.Add(s);
+							}
+							Note(inner);
+							return;
+						}
+					}
+				}
+			}
+
 			int currentFrame = UnityEngine.Time.frameCount;
 			if (currentFrame != lastFrameCount)
 			{
@@ -134,8 +161,19 @@ namespace GlobalAutoTranslator
 			}
 		}
 
-		public static void Drain(int maxPerCall = 30)
+		public static bool IsJunkPath(string s)
 		{
+			bool hasSlash = s.Contains("/") || s.Contains("\\");
+			return (hasSlash && !s.Contains(" ")) ||
+				   s.Contains("://") ||
+				   s.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+				   s.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
+				   s.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
+		}
+
+		public static void Drain(int maxPerCall = 50)
+		{
+
 			if (enqueuedThisSession >= MaxEnqueuedPerSession)
 			{
 				if (!limitReachedLogged)
@@ -159,10 +197,7 @@ namespace GlobalAutoTranslator
 				}
 
 				// Фильтр путей, файлов и расширений
-				if (s.Contains("/") || s.Contains("\\") ||
-					s.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
-					s.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
-					s.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+				if (IsJunkPath(s))
 				{
 					filteredCount++;
 					continue;

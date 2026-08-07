@@ -30,9 +30,10 @@ namespace GlobalAutoTranslator
 		/// Без MD5 и без контекста: в Widgets.Label нельзя тратить ни одной аллокации.</summary>
 		private static readonly ConcurrentDictionary<string, string> flat =
 			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+		private static readonly ConcurrentDictionary<string, int> flatNoFallback =
+			new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
 
-		private static readonly ConcurrentDictionary<string, byte> flatNoFallback =
-			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+		private static int cacheGeneration;
 
 		public class TemplateRecord
 		{
@@ -213,7 +214,8 @@ namespace GlobalAutoTranslator
 			}
 
 			if (flat.TryGetValue(source, out translated)) return true;
-			if (flatNoFallback.ContainsKey(source))
+			int gen;
+			if (flatNoFallback.TryGetValue(source, out gen) && gen == System.Threading.Volatile.Read(ref cacheGeneration))
 			{
 				translated = null;
 				return false;
@@ -317,7 +319,33 @@ namespace GlobalAutoTranslator
 				}
 			}
 
-			flatNoFallback[source] = 1;
+			// 7. HTML-теги вокруг ("<b>text</b>" -> "<b>текст</b>")
+			if (source.StartsWith("<") && source.EndsWith(">") && source.Length > 2)
+			{
+				int firstClose = source.IndexOf('>');
+				if (firstClose > 1 && firstClose < source.Length - 2)
+				{
+					string openTag = source.Substring(0, firstClose + 1);
+					if (!openTag.StartsWith("</"))
+					{
+						int eqIdx = openTag.IndexOf('=');
+						string tagName = eqIdx > 0 ? openTag.Substring(1, eqIdx - 1) : openTag.Substring(1, openTag.Length - 2);
+						string closeTag = "</" + tagName + ">";
+						if (source.EndsWith(closeTag))
+						{
+							string inner = source.Substring(openTag.Length, source.Length - openTag.Length - closeTag.Length);
+							if (TryGetFlat(inner, out string innerTrans))
+							{
+								translated = openTag + innerTrans + closeTag;
+								flat[source] = translated;
+								return true;
+							}
+						}
+					}
+				}
+			}
+
+			flatNoFallback[source] = System.Threading.Volatile.Read(ref cacheGeneration);
 			translated = null;
 			return false;
 		}
@@ -491,8 +519,9 @@ namespace GlobalAutoTranslator
 				else
 					flat.TryAdd(source, translated);
 
-				byte ig;
+				int ig;
 				flatNoFallback.TryRemove(source, out ig);
+				System.Threading.Interlocked.Increment(ref cacheGeneration);
 				RegisterTemplateIfAny(source, translated);
 			}
 			dirtyShards[ShardOf(key)] = 1;
@@ -570,6 +599,8 @@ namespace GlobalAutoTranslator
 			{
 				GATLog.Warn("Не удалось загрузить кэш: " + e);
 			}
+			
+			System.Threading.Interlocked.Increment(ref cacheGeneration);
 		}
 
 		/// <summary>Сбрасывает на диск только изменённые шарды.</summary>
@@ -658,8 +689,8 @@ namespace GlobalAutoTranslator
 	public static class GATLog
 	{
 		private const string Tag = "[GlobalAutoTranslator] ";
-		public static void Msg(string s) { Log.Message(Tag + s); }
-		public static void Warn(string s) { Log.Warning(Tag + s); }
-		public static void Err(string s) { Log.Error(Tag + s); }
+		public static void Msg(string s) { try { Log.Message(Tag + s); } catch { System.Console.WriteLine(Tag + s); } }
+		public static void Warn(string s) { try { Log.Warning(Tag + s); } catch { System.Console.WriteLine("[WARN] " + Tag + s); } }
+		public static void Err(string s) { try { Log.Error(Tag + s); } catch { System.Console.WriteLine("[ERR] " + Tag + s); } }
 	}
 }

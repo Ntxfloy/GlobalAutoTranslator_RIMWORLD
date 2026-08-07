@@ -50,12 +50,20 @@ namespace GlobalAutoTranslator
 
 	public class GATMod : Mod
 	{
+		public const string ModVersion = "31.0";
 		public static GATSettings Settings;
 		private static string selfTestResult = "";
 
 		public GATMod(ModContentPack content) : base(content)
 		{
 			Settings = GetSettings<GATSettings>();
+			
+			// Выводим версию и информацию в лог при старте
+			System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
+			string asmVersion = asm.GetName().Version.ToString();
+			System.IO.FileInfo fi = new System.IO.FileInfo(asm.Location);
+			GATLog.Msg("Started: v" + ModVersion + " (Asm: " + asmVersion + ", Date: " + fi.LastWriteTime.ToString("o") + ")");
+			GATLog.Msg("Prompt v" + Prompt.PromptVersion + ", Model: " + Settings.model);
 		}
 
 		public override string SettingsCategory()

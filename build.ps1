@@ -99,9 +99,26 @@ foreach ($p in @($MANAGED, $HARMONY, $CSC)) {
     if (-not (Test-Path $p)) { throw "Not found: $p" }
 }
 
+# ---- Generate AssemblyInfo.cs -------------------------------------------------
+$assemblyInfo = @"
+using System.Reflection;
+
+[assembly: AssemblyTitle("GlobalAutoTranslator")]
+[assembly: AssemblyDescription("AI Translator for RimWorld")]
+[assembly: AssemblyConfiguration("")]
+[assembly: AssemblyCompany("Ayder")]
+[assembly: AssemblyProduct("GlobalAutoTranslator")]
+[assembly: AssemblyCopyright("Copyright © 2026")]
+[assembly: AssemblyTrademark("")]
+[assembly: AssemblyCulture("")]
+[assembly: AssemblyVersion("31.0.0.0")]
+[assembly: AssemblyFileVersion("31.0.0.0")]
+"@
+Set-Content -Path "$SRC_DIR\AssemblyInfo.cs" -Value $assemblyInfo -Encoding UTF8
+
 # ---- Compile ----------------------------------------------------------------
 Write-Host "[BUILD] Compiling..." -ForegroundColor Cyan
-$SRC = Get-ChildItem "$SRC_DIR\*.cs" | Select-Object -ExpandProperty FullName
+$SRC = Get-ChildItem "$SRC_DIR\*.cs" -Recurse | Where-Object { $_.FullName -notmatch '\\tests\\' } | Select-Object -ExpandProperty FullName
 
 & $CSC `
     "/target:library" `

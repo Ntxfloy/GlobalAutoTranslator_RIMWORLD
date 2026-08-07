@@ -1,0 +1,148 @@
+===== SECTION: TOOLCHAIN =====
+- Компилятор MSBuild/CSC:
+  - Путь: D:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\..\roslyn\tasks\net472\csc.exe
+  - csc.exe успешно вызывается и компилирует наш мод через build.ps1.
+- Доступный dotnet:
+  - Путь: C:\Program Files\dotnet\dotnet.exe
+  - Статус SDK: Отсутствует (только Runtime). Команда dotnet tool install недоступна, поэтому декомпилятор ilspycmd не может быть установлен. Для исследования структуры сборок использовался встроенный рефлексивный сканер PowerShell.
+
+===== SECTION: FOUND_DLLS =====
+В ходе поиска по сигнатурам и About.xml были найдены следующие моды и DLL:
+1. Мод: "Multi-Doctor Tending"
+   - Путь DLL: D:\SteamLibrary\steamapps\workshop\content\294100\3561607586\Assemblies\MultiTending.dll
+   - Совпадения: Bleed rate threshold, Decay per additional doctor, Efficiency scaling, Type of wounds to multi-tend, Life-threatening triggers
+2. Мод: "MultiConstruction"
+   - Путь DLL: D:\SteamLibrary\steamapps\workshop\content\294100\3562530209\Assemblies\MultiConstruct.dll
+   - Совпадения: Preview (per worker), Assistant base bonus
+3. Мод: "Level Up!"
+   - Путь DLL: D:\SteamLibrary\steamapps\workshop\content\294100\1701592470\1.6\Assemblies\LevelUp.dll
+   - Описание: Строки "Level up actions" и "Level down actions" найдены в Languages/English/Keyed/English.xml под ключами LevelUp.LevelUpActionsLabel и LevelUp.LevelDownActionsLabel. Сама DLL LevelUp.dll содержит класс LevelUp.I18n с методами get_LevelUpActionsLabel и get_LevelDownActionsLabel, которые возвращают эти строки при отрисовке настроек.
+
+===== SECTION: IL_SCAN =====
+1. Сборка: MultiTending.dll
+   - Метод: MultiTending.MultiTendingMod::DoSettingsWindowContents
+   - Инструкции IL и вызовы:
+     Offset 372 - LDSTR: 'Life-threatening triggers when either condition below is met:'
+     Offset 377 - CALL: MultiTending.MultiTendingMod::DrawInfoLine
+     Offset 416 - LDSTR: 'Death-in threshold: {0:0.#} hours'
+     Offset 432 - CALL: System.String::Format
+     Offset 452 - CALL: Verse.Widgets::HorizontalSlider
+     Offset 496 - LDSTR: 'Bleed rate threshold: {0:0}%/day'
+     Offset 518 - CALL: System.String::Format
+     Offset 538 - CALL: Verse.Widgets::HorizontalSlider
+     Offset 739 - LDSTR: 'Assist bonus (per extra doctor, base): +{0:0}% speed'
+     Offset 761 - CALL: System.String::Format
+     Offset 781 - CALL: Verse.Widgets::HorizontalSlider
+     Offset 825 - LDSTR: 'Decay per additional doctor: ?{0:0.00}'
+     Offset 841 - CALL: System.String::Format
+     Offset 861 - CALL: Verse.Widgets::HorizontalSlider
+     Offset 928 - LDSTR: 'Reset to defaults'
+     Offset 946 - CALL: Verse.Widgets::ButtonText
+
+2. Сборка: MultiConstruct.dll
+   - Метод: MultiConstruct.MultiConstructMod::DoSettingsWindowContents
+   - Инструкции IL и вызовы:
+     Offset 306 - LDSTR: 'Assistant base bonus (2nd worker): {0:P0}'
+     Offset 322 - CALL: System.String::Format
+     Offset 341 - CALL: Verse.Listing_Standard::Label
+     Offset 391 - LDSTR: 'Assistant multiplier (each additional worker): {0:P0}'
+     Offset 407 - CALL: System.String::Format
+     Offset 426 - CALL: Verse.Listing_Standard::Label
+     Offset 513 - LDSTR: 'Preview (per worker):'
+     Offset 532 - CALL: Verse.Listing_Standard::Label
+     Offset 576 - LDSTR: '  #{0}: {1:P0}'
+     Offset 594 - CALL: System.String::Format
+     Offset 613 - CALL: Verse.Listing_Standard::Label
+
+3. Сборка: LevelUp.dll
+   - Класс: LevelUp.I18n
+     - Статический конструктор (.cctor) инициализирует backing-поля get-свойств через вызов LevelUp.I18n::TranslateInternal.
+     - TranslateInternal делает вызов Verse.Translator::Translate(key), который переводит строки по ключам.
+   - Метод: LevelUp.Profile::DoLeft
+     - Вызовы: LevelUp.I18n::get_LevelUpActionsLabel, LevelUp.I18n::get_LevelDownActionsLabel, LevelUp.Profile::DoList.
+   - Метод: LevelUp.Profile::DoList
+     - Вызовы:
+       Offset 43 - LDSTR: '<b>'
+       Offset 49 - LDSTR: '</b>'
+       Offset 54 - CALL: System.String::Concat
+       Offset 59 - CALL: Verse.Widgets::Label
+       Offset 72 - CALL: Verse.TooltipHandler::TipRegion
+
+===== SECTION: OUR_PATCHES =====
+Мы патчим следующие методы в Source/Patches.cs:
+1. Класс: LoadedLanguage
+   - Метод: TryGetTextFromKey
+   - Параметры: (string key, ref TaggedString translated, ref bool __result) [Postfix]
+2. Класс: Widgets
+   - Метод: Label (перегрузка 1)
+   - Параметры: (UnityEngine.Rect rect, string label) [Prefix]
+3. Класс: Widgets
+   - Метод: Label (перегрузка 2)
+   - Параметры: (UnityEngine.Rect rect, TaggedString label) [Prefix]
+4. Класс: Widgets
+   - Метод: LabelFit
+   - Параметры: (UnityEngine.Rect rect, string label) [Prefix]
+5. Класс: Widgets
+   - Метод: ButtonText (перегрузка 1)
+   - Параметры: (UnityEngine.Rect rect, string label, bool drawBackground, bool doMouseoverSound, bool active, Nullable<UnityEngine.TextAnchor> anchor) [Prefix]
+6. Класс: Widgets
+   - Метод: ButtonText (перегрузка 2 с Color)
+   - Параметры: (UnityEngine.Rect rect, string label, bool drawBackground, bool doMouseoverSound, UnityEngine.Color color, bool active, Nullable<UnityEngine.TextAnchor> anchor) [Prefix]
+7. Класс: QuestManager
+   - Метод: Add
+   - Параметры: (Quest quest) [Postfix]
+8. Класс: MainTabWindow_Quests
+   - Метод: PreOpen
+   - Параметры: () [Postfix]
+9. Класс: LetterStack
+   - Метод: ReceiveLetter
+   - Параметры: (Letter let, string label, int delayTicks, bool playSound) [Prefix]
+10. Класс: Root
+    - Метод: Update
+    - Параметры: () [Postfix]
+11. Класс: TickManager
+    - Метод: DoSingleTick
+    - Параметры: () [Postfix]
+12. Класс: ChoiceLetter
+    - Метод: OpenLetter
+    - Параметры: (Letter __instance) [Prefix]
+13. Класс: TooltipHandler
+    - Метод: TipRegion
+    - Параметры: (ref TipSignal tip) [Prefix]
+14. Класс: Widgets
+    - Метод: CheckboxLabeled
+    - Параметры: (ref string label) [Prefix] (Примечание: на самом деле патчится перегрузка с Rect, string)
+15. Класс: FloatMenuOption
+    - Метод: .ctor (конструктор)
+    - Параметры: (ref string label) [Prefix]
+16. Класс: Messages
+    - Метод: Message
+    - Параметры: (ref string text) [Prefix]
+17. Класс: DiaNode
+    - Метод: .ctor (конструктор)
+    - Параметры: (ref TaggedString text) [Prefix]
+
+- Отдельные ответы по покрытию:
+  - Перегрузка Widgets.Label(Rect, TaggedString) — Да, покрыта (класс Patch_Widgets_Label_RectTaggedString, Prefix).
+  - Метод Widgets.ListSeparator — Нет, не покрыт. Патча для ListSeparator в Patches.cs нет.
+
+===== SECTION: ANSWERS_A_B_C =====
+- Ответ на вопрос А:
+  Да, "Level up actions" и "Level down actions" выводятся тем же методом (Widgets.Label), что и пункты "Animation", "Sound" («Анимация», «Звук»).
+  Причина, почему «Анимация» и «Звук» переводятся, а "Level up actions" — нет:
+  1. «Анимация» и «Звук» являются Def-объектами (ActionDef) и переводятся на этапе загрузки DefInjected XML (или DefPostProcessor), их переводы успешно попадают в кэш.
+  2. "Level up actions" — это Keyed-перевод. Из-за раннего обращения к static constructor (LevelUp.I18n..cctor) во время инициализации мода (когда наши Harmony-патчи ещё не применены), метод Translator.Translate получает английскую строку из английского XML и навсегда кэширует её в backing-поле. При выводе на экран Widgets.Label получает "<b>Level up actions</b>" (с тегами <b>) и промахивается мимо плоского кэша, так как строка в кэш не заносилась.
+
+- Ответ на вопрос Б:
+  Строка "Preview (per worker):" рисуется как отдельный статический заголовок методом Listing_Standard::Label.
+  Остальные строки (блоки "  #2: 150%", "  #3: 120%") строятся динамически в цикле с использованием формата "  #{0}: {1:P0}" и выводятся каждая своим отдельным вызовом Listing_Standard::Label.
+
+- Ответ на вопрос В:
+  "Death-in threshold: 8 hours" успешно переведён, так как он не содержит слэшей и прошёл проверку в UiHarvest.Drain().
+  "Bleed rate threshold: 100%/day" НЕ переводится потому, что строка содержит слэш ('/'). 
+  В UiHarvest.Drain() жестко прописано:
+  "if (s.Contains("/") || s.Contains("\\")) { filteredCount++; continue; }"
+  Из-за этого фильтра, призванного отсекать пути файлов, строка с "/day" молча отбрасывается и никогда не отправляется на перевод.
+
+- Ответ на вопрос Г (запасной путь в TranslationCache):
+  НЕТ. При промахе по многострочной строке в TranslationCache (методы TryGet, TryGetFlat) построчный запасной путь отсутствует — ищется только точное совпадение строки целиком.
