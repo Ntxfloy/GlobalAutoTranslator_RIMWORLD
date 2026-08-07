@@ -108,11 +108,11 @@ using System.Reflection;
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Ayder")]
 [assembly: AssemblyProduct("GlobalAutoTranslator")]
-[assembly: AssemblyCopyright("Copyright © 2026")]
+[assembly: AssemblyCopyright("Copyright (c) 2026")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
-[assembly: AssemblyVersion("31.0.0.0")]
-[assembly: AssemblyFileVersion("31.0.0.0")]
+[assembly: AssemblyVersion("32.0.0.0")]
+[assembly: AssemblyFileVersion("32.0.0.0")]
 "@
 Set-Content -Path "$SRC_DIR\AssemblyInfo.cs" -Value $assemblyInfo -Encoding UTF8
 

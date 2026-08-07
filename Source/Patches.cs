@@ -33,6 +33,28 @@ namespace GlobalAutoTranslator
 		public static bool LimitReached => enqueuedThisSession >= MaxEnqueuedPerSession;
 		public static int SeenCount { get { lock (seen) { return seen.Count; } } }
 
+		/// <summary>Maximum length for a single-line label to be translated.</summary>
+		public const int MaxSingleLineLabel = 300;
+		/// <summary>Maximum length for a multi-line label (tooltip) to be translated.</summary>
+		public const int MaxMultiLineLabel = 2000;
+
+		/// <summary>
+		/// Returns true if the string is too long to translate.
+		/// Multi-line strings (containing \n) get a higher limit of 2000 chars.
+		/// Single-line strings are capped at 300 chars.
+		/// </summary>
+		public static bool IsTooLongForLabel(string s)
+		{
+			if (string.IsNullOrEmpty(s)) return false;
+			return s.Length > (s.IndexOf('\n') >= 0 ? MaxMultiLineLabel : MaxSingleLineLabel);
+		}
+
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+		private static int GetUnityFrameCount()
+		{
+			return UnityEngine.Time.frameCount;
+		}
+
 		public static void Note(string s)
 		{
 			if (string.IsNullOrEmpty(s)) return;
@@ -66,7 +88,7 @@ namespace GlobalAutoTranslator
 				}
 			}
 
-			int currentFrame = UnityEngine.Time.frameCount;
+			int currentFrame = GATLog.ConsoleMode ? 0 : GetUnityFrameCount();
 			if (currentFrame != lastFrameCount)
 			{
 				lastFrameCount = currentFrame;
@@ -571,10 +593,12 @@ namespace GlobalAutoTranslator
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+			if (string.IsNullOrEmpty(label) || UiHarvest.IsTooLongForLabel(label)) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(label, out cached))
+				label = cached;
+			else if (label.IndexOf('\n') >= 0 && TranslationCache.TryGetMultiline(label, out cached))
 				label = cached;
 			else
 				UiHarvest.Note(label);
@@ -605,10 +629,12 @@ namespace GlobalAutoTranslator
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
 			string raw = label.RawText;
-			if (string.IsNullOrEmpty(raw) || raw.Length > 300) return;
+			if (string.IsNullOrEmpty(raw) || UiHarvest.IsTooLongForLabel(raw)) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(raw, out cached))
+				label = new TaggedString(cached);
+			else if (raw.IndexOf('\n') >= 0 && TranslationCache.TryGetMultiline(raw, out cached))
 				label = new TaggedString(cached);
 			else
 				UiHarvest.Note(raw);
@@ -638,7 +664,7 @@ namespace GlobalAutoTranslator
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+			if (string.IsNullOrEmpty(label) || UiHarvest.IsTooLongForLabel(label)) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(label, out cached))
@@ -673,7 +699,7 @@ namespace GlobalAutoTranslator
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+			if (string.IsNullOrEmpty(label) || UiHarvest.IsTooLongForLabel(label)) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(label, out cached))
@@ -708,7 +734,7 @@ namespace GlobalAutoTranslator
 		{
 			var s = GATMod.Settings;
 			if (s == null || !s.translateWidgets) return;
-			if (string.IsNullOrEmpty(label) || label.Length > 300) return;
+			if (string.IsNullOrEmpty(label) || UiHarvest.IsTooLongForLabel(label)) return;
 
 			string cached;
 			if (TranslationCache.TryGetFlat(label, out cached))

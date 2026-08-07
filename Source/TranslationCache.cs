@@ -33,6 +33,19 @@ namespace GlobalAutoTranslator
 		private static readonly ConcurrentDictionary<string, int> flatNoFallback =
 			new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
 
+		/// <summary>Кэш результатов многострочного поиска. Ключ — исходная многострочная строка. Только полные попадания (все строки переведены).</summary>
+		private static readonly ConcurrentDictionary<string, string> multiline =
+			new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+		/// <summary>Частичные результаты: найдены не все строки. Хранится вместе с поколением — протухает при новых переводах.</summary>
+		private static readonly ConcurrentDictionary<string, KeyValuePair<int, string>> multilinePartial =
+			new ConcurrentDictionary<string, KeyValuePair<int, string>>(StringComparer.Ordinal);
+		/// <summary>Отрицательный кэш многострочного поиска: если ни одна строка не нашлась — помечаем поколением.</summary>
+		private static readonly ConcurrentDictionary<string, int> multilineNoFallback =
+			new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+		/// <summary>Число реальных разборов по строкам (для теста мемоизации).</summary>
+		private static int multilineSplitCount;
+		public static int MultilineSplitCount { get { return System.Threading.Volatile.Read(ref multilineSplitCount); } }
+
 		private static int cacheGeneration;
 
 		public class TemplateRecord
@@ -346,6 +359,101 @@ namespace GlobalAutoTranslator
 			}
 
 			flatNoFallback[source] = System.Threading.Volatile.Read(ref cacheGeneration);
+			translated = null;
+			return false;
+		}
+
+		/// <summary>
+		/// Поиск перевода для многострочной строки (например, текст всплывающей подсказки).
+		/// Разбивает по \n, для каждой непустой строки вызывает TryGetFlat,
+		/// склеивает обратно тем же разделителем.
+		/// Мемоизируется по поколению: разбор выполняется ровно один раз на поколение.
+		/// </summary>
+		public static bool TryGetMultiline(string source, out string translated)
+		{
+			translated = null;
+			if (string.IsNullOrEmpty(source)) return false;
+
+			int currentGen = System.Threading.Volatile.Read(ref cacheGeneration);
+
+			// 1. Полный кэш (все строки переведены, вечный)
+			if (multiline.TryGetValue(source, out translated)) return true;
+
+			// 2. Частичный кэш (не все строки) — только если поколение совпадает
+			KeyValuePair<int, string> partialEntry;
+			if (multilinePartial.TryGetValue(source, out partialEntry) && partialEntry.Key == currentGen)
+			{
+				translated = partialEntry.Value;
+				return true;
+			}
+
+			// 3. Отрицательный кэш (ни одной строки) — только если поколение совпадает
+			int storedGen;
+			if (multilineNoFallback.TryGetValue(source, out storedGen) && storedGen == currentGen)
+			{
+				translated = null;
+				return false;
+			}
+
+			// 4. Реальный разбор — считаем для теста мемоизации
+			System.Threading.Interlocked.Increment(ref multilineSplitCount);
+
+			// Разбиваем по \n, сохраняя \r и пустые строки
+			var parts = source.Split('\n');
+			int foundCount = 0;
+			int nonEmptyCount = 0;
+			var sb = new System.Text.StringBuilder(source.Length + 32);
+
+			for (int i = 0; i < parts.Length; i++)
+			{
+				if (i > 0) sb.Append('\n');
+
+				string part = parts[i];
+				// Сохраняем \r если он был в конце части (из \r\n)
+				bool hasCr = part.Length > 0 && part[part.Length - 1] == '\r';
+				string partCore = hasCr ? part.Substring(0, part.Length - 1) : part;
+
+				if (string.IsNullOrEmpty(partCore))
+				{
+					// Пустая строка — оставляем как есть (с \r если был)
+					sb.Append(part);
+				}
+				else
+				{
+					nonEmptyCount++;
+					string partTranslated;
+					if (TryGetFlat(partCore, out partTranslated))
+					{
+						foundCount++;
+						sb.Append(partTranslated);
+						if (hasCr) sb.Append('\r');
+					}
+					else
+					{
+						// Строка не найдена — ставим в очередь и оставляем оригинал
+						UiHarvest.Note(partCore);
+						sb.Append(part);
+					}
+				}
+			}
+
+			if (foundCount > 0)
+			{
+				translated = sb.ToString();
+				if (foundCount == nonEmptyCount)
+				{
+					// Все непустые строки найдены — кэш вечный
+					multiline[source] = translated;
+				}
+				else
+				{
+					// Частичный результат — кэш с поколением
+					multilinePartial[source] = new KeyValuePair<int, string>(currentGen, translated);
+				}
+				return true;
+			}
+
+			multilineNoFallback[source] = currentGen;
 			translated = null;
 			return false;
 		}
@@ -670,6 +778,9 @@ namespace GlobalAutoTranslator
 			map.Clear();
 			sources.Clear();
 			flat.Clear();
+			multiline.Clear();
+			multilinePartial.Clear();
+			multilineNoFallback.Clear();
 			dirtyShards.Clear();
 			try
 			{
@@ -689,8 +800,27 @@ namespace GlobalAutoTranslator
 	public static class GATLog
 	{
 		private const string Tag = "[GlobalAutoTranslator] ";
-		public static void Msg(string s) { try { Log.Message(Tag + s); } catch { System.Console.WriteLine(Tag + s); } }
-		public static void Warn(string s) { try { Log.Warning(Tag + s); } catch { System.Console.WriteLine("[WARN] " + Tag + s); } }
-		public static void Err(string s) { try { Log.Error(Tag + s); } catch { System.Console.WriteLine("[ERR] " + Tag + s); } }
+
+		/// <summary>
+		/// Выставляется в true консольным стендом (tests/Program.cs).
+		/// В игре остаётся false — используется Log.Message без перехвата.
+		/// </summary>
+		public static bool ConsoleMode = false;
+
+		public static void Msg(string s)
+		{
+			if (ConsoleMode) System.Console.WriteLine(Tag + s);
+			else Log.Message(Tag + s);
+		}
+		public static void Warn(string s)
+		{
+			if (ConsoleMode) System.Console.WriteLine("[WARN] " + Tag + s);
+			else Log.Warning(Tag + s);
+		}
+		public static void Err(string s)
+		{
+			if (ConsoleMode) System.Console.WriteLine("[ERR] " + Tag + s);
+			else Log.Error(Tag + s);
+		}
 	}
 }

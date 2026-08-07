@@ -9,6 +9,7 @@ namespace GlobalAutoTranslatorTests
         static void Main()
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
+            GATLog.ConsoleMode = true;
             SelfTest.Run();
 
             // Task 5: Measure Invalidation Cost

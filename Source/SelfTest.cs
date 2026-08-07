@@ -443,6 +443,103 @@ namespace GlobalAutoTranslator
 				sb.AppendLine((ok56 ? "[OK]" : "[FAIL]") + " 56. Slash filter rules -> pass=" + passes_pass + ", fail1=" + passes_fail1 + ", fail2=" + passes_fail2);
 			}
 
+			// 57. TryGetMultiline: три строки, две есть в кэше, одна нет.
+			// Порядок как в бою: сначала TryGetMultiline (промах), потом Put двух строк, потом снова TryGetMultiline.
+			{
+				string src57 = "Aerophilia (over 20 days)\n\nThis pawn loves the sky.\nUnknown feeling here.";
+				string out57_1;
+				// Первый вызов — ни одной строки в кэше, должен вернуть false
+				bool miss57 = !TranslationCache.TryGetMultiline(src57, out out57_1);
+
+				// Добавляем два из трёх переводов
+				TranslationCache.Put("ui", "Aerophilia (over 20 days)", "Аэрофилия (более 20 дней)");
+				TranslationCache.Put("ui", "This pawn loves the sky.", "Этот пешка любит небо.");
+
+				// Второй вызов — должен подставить две строки, третья остаётся английской
+				string out57_2;
+				bool hit57 = TranslationCache.TryGetMultiline(src57, out out57_2);
+				string expected57 = "Аэрофилия (более 20 дней)\n\nЭтот пешка любит небо.\nUnknown feeling here.";
+				bool ok57 = miss57 && hit57 && out57_2 == expected57;
+				sb.AppendLine((ok57 ? "[OK]" : "[FAIL]") + " 57. TryGetMultiline: partial cache hit -> " + (out57_2 == null ? "null" : out57_2.Replace("\n", "\\n")) + (ok57 ? "" : " | ожидалось: " + expected57.Replace("\n", "\\n")));
+			}
+
+			// 58. TryGetMultiline: ни одной строки в кэше — возвращает false, склейка помечена отрицательно.
+			{
+				string src58 = "Completely unknown line A\n\nCompletely unknown line B";
+				string out58;
+				bool miss58 = !TranslationCache.TryGetMultiline(src58, out out58);
+				// Повторный вызов без изменения поколения — тоже false (из отрицательного кэша)
+				string out58b;
+				bool miss58b = !TranslationCache.TryGetMultiline(src58, out out58b);
+				bool ok58 = miss58 && miss58b && out58 == null;
+				sb.AppendLine((ok58 ? "[OK]" : "[FAIL]") + " 58. TryGetMultiline: all miss -> false, negative cached -> " + ok58);
+			}
+
+			// 59. Мемоизация: два подряд вызова TryGetMultiline с одной строкой без изменения поколения
+			// должны дать ровно один реальный разбор.
+			{
+				string src59 = "Memo line one\n\nMemo line two";
+				// Сбрасываем состояние: строки не в кэше, счётчик фиксируем
+				int splitBefore = TranslationCache.MultilineSplitCount;
+				string o1; TranslationCache.TryGetMultiline(src59, out o1); // первый вызов — реальный разбор
+				int splitAfterFirst = TranslationCache.MultilineSplitCount;
+				string o2; TranslationCache.TryGetMultiline(src59, out o2); // второй вызов — должен взять из отрицательного кэша
+				int splitAfterSecond = TranslationCache.MultilineSplitCount;
+				// Счётчик вырос ровно на 1 (первый вызов), второй вызов не добавил
+				bool ok59 = (splitAfterFirst - splitBefore) == 1 && (splitAfterSecond - splitAfterFirst) == 0;
+				sb.AppendLine((ok59 ? "[OK]" : "[FAIL]") + " 59. TryGetMultiline memoization: split count +1 on first, +0 on second -> delta1=" + (splitAfterFirst - splitBefore) + ", delta2=" + (splitAfterSecond - splitAfterFirst));
+			}
+
+			// 60. TryGetMultiline: строка с \r\n корректно разбирается и склеивается с сохранением \r.
+			{
+				TranslationCache.Put("ui", "Line with CR", "Строка с CR");
+				TranslationCache.Put("ui", "Second line", "Вторая строка");
+				string src60 = "Line with CR\r\nSecond line";
+				string out60;
+				bool ok60_hit = TranslationCache.TryGetMultiline(src60, out out60);
+				string expected60 = "Строка с CR\r\nВторая строка";
+				bool ok60 = ok60_hit && out60 == expected60;
+				sb.AppendLine((ok60 ? "[OK]" : "[FAIL]") + " 60. TryGetMultiline CRLF preserved -> " + (out60 == null ? "null" : out60.Replace("\r", "\\r").Replace("\n", "\\n")) + (ok60 ? "" : " | ожидалось: " + expected60.Replace("\r", "\\r").Replace("\n", "\\n")));
+			}
+
+			// 61. Тест правки 1: частичный результат протухает при новом переводе.
+			// Кладём в кэш только первую строку → TryGetMultiline → true, вторая осталась английской.
+			// Затем Put второй строки → снова TryGetMultiline → обе строки по-русски.
+			{
+				string src61 = "t61_alpha line\nt61_beta line";
+				TranslationCache.Put("ui", "t61_alpha line", "альфа-строка");
+				// НЕ кладём t61_beta — чтобы первый вызов дал частичный результат
+				string out61_partial;
+				bool hit61_1 = TranslationCache.TryGetMultiline(src61, out out61_partial);
+				string expected61_partial = "альфа-строка\nt61_beta line";
+				bool ok61_1 = hit61_1 && out61_partial == expected61_partial;
+
+				// Теперь кладём вторую строку — поколение растёт, частичный кэш протухает
+				TranslationCache.Put("ui", "t61_beta line", "бета-строка");
+
+				string out61_full;
+				bool hit61_2 = TranslationCache.TryGetMultiline(src61, out out61_full);
+				string expected61_full = "альфа-строка\nбета-строка";
+				bool ok61_2 = hit61_2 && out61_full == expected61_full;
+
+				bool ok61 = ok61_1 && ok61_2;
+				sb.AppendLine((ok61 ? "[OK]" : "[FAIL]") + " 61. Partial cache refreshes after Put: partial=" + (out61_partial ?? "null").Replace("\n", "\\n") + " | full=" + (out61_full ?? "null").Replace("\n", "\\n") + (ok61 ? "" : " | ERR: p1=" + ok61_1 + " p2=" + ok61_2));
+			}
+
+			// 62. UiHarvest.IsTooLongForLabel: три граничных случая.
+			{
+				string s350 = new string('x', 350);               // 350 без \n — должно быть true (> 300)
+				string s350n = new string('x', 175) + "\n" + new string('x', 174); // 350 с \n — false (< 2000)
+				string s2500n = new string('x', 1200) + "\n" + new string('x', 1299); // 2500 с \n — true (> 2000)
+
+				bool r1 = UiHarvest.IsTooLongForLabel(s350);     // ожидаем true
+				bool r2 = UiHarvest.IsTooLongForLabel(s350n);    // ожидаем false
+				bool r3 = UiHarvest.IsTooLongForLabel(s2500n);   // ожидаем true
+
+				bool ok62 = r1 && !r2 && r3;
+				sb.AppendLine((ok62 ? "[OK]" : "[FAIL]") + " 62. IsTooLongForLabel: 350no_n=" + r1 + ", 350with_n=" + r2 + ", 2500with_n=" + r3);
+			}
+
 			GATLog.Msg(sb.ToString());
 		}
 	}
