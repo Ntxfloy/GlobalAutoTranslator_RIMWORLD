@@ -67,6 +67,45 @@ namespace GlobalAutoTranslator
 			CheckThrottledRefresh();
 		}
 
+		public static bool IsFleshRace(RaceProperties race)
+		{
+			if (race == null) return false;
+			try
+			{
+				return race.IsFlesh;
+			}
+			catch
+			{
+				return race.hasMeat;
+			}
+		}
+
+		public static bool ShouldRefreshGeneratedMeatLabel(ThingDef source, ThingDef target)
+		{
+			if (source == null || target == null) return false;
+			if (source.category != Verse.ThingCategory.Pawn) return false;
+			if (source.race == null) return false;
+			if (!IsFleshRace(source.race)) return false;
+			if (source.race.useMeatFrom != null) return false;
+			if (!string.IsNullOrEmpty(source.race.meatLabel)) return false;
+			if (string.IsNullOrEmpty(source.defName)) return false;
+			if (!string.Equals(target.defName, "Meat_" + source.defName, StringComparison.Ordinal)) return false;
+			if (target.ingestible == null) return false;
+			if (!object.ReferenceEquals(target.ingestible.sourceDef, source)) return false;
+			return true;
+		}
+
+		public static bool ShouldRefreshGeneratedCorpseLabel(ThingDef source, ThingDef target)
+		{
+			if (source == null || target == null) return false;
+			if (source.category != Verse.ThingCategory.Pawn && source.race == null) return false;
+			if (string.IsNullOrEmpty(source.defName)) return false;
+			if (!string.Equals(target.defName, "Corpse_" + source.defName, StringComparison.Ordinal)) return false;
+			if (target.ingestible == null) return false;
+			if (!object.ReferenceEquals(target.ingestible.sourceDef, source)) return false;
+			return true;
+		}
+
 		public static void RefreshDerivedDefLabels()
 		{
 			int recipes = 0, jobStrings = 0, blueprints = 0, frames = 0, corpses = 0, meats = 0, terrain = 0, skipped = 0, errors = 0;
@@ -246,7 +285,7 @@ namespace GlobalAutoTranslator
 							}
 
 							// Трупы (corpseDef)
-							if (t.race != null && t.race.corpseDef != null && canCorpseLabel)
+							if (canCorpseLabel && t.race != null && ShouldRefreshGeneratedCorpseLabel(t, t.race.corpseDef))
 							{
 								TaggedString newCorpseTS = "CorpseLabel".Translate(t.label);
 								string newCorpse = newCorpseTS.RawText;
@@ -263,7 +302,7 @@ namespace GlobalAutoTranslator
 							}
 
 							// Мясо (meatDef)
-							if (t.race != null && t.race.meatDef != null && canMeatLabel)
+							if (canMeatLabel && t.race != null && ShouldRefreshGeneratedMeatLabel(t, t.race.meatDef))
 							{
 								TaggedString newMeatTS = "MeatLabel".Translate(t.label);
 								string newMeat = newMeatTS.RawText;
