@@ -34,11 +34,214 @@ namespace GlobalAutoTranslator
 		{
 			Action a;
 			int n = 0;
+			bool anyApplied = false;
 			while (n < maxPerCall && pendingApply.TryDequeue(out a))
 			{
-				try { a(); } catch { }
+				try { a(); anyApplied = true; } catch { }
 				n++;
 			}
+			if (anyApplied)
+			{
+				RefreshDerivedDefLabels();
+			}
+		}
+
+		public static void RefreshDerivedDefLabels()
+		{
+			int recipes = 0, jobStrings = 0, blueprints = 0, frames = 0, skipped = 0, errors = 0;
+			try
+			{
+				// 1. Пересборка рецептов Make_* и Administer_*
+				var recipeDefs = DefDatabase<Verse.RecipeDef>.AllDefsListForReading;
+				if (recipeDefs != null)
+				{
+					for (int i = 0; i < recipeDefs.Count; i++)
+					{
+						var r = recipeDefs[i];
+						if (r == null || string.IsNullOrEmpty(r.defName)) continue;
+
+						try
+						{
+							if (r.defName.StartsWith("Make_"))
+							{
+								var prod = r.ProducedThingDef;
+								if (prod != null && !string.IsNullOrEmpty(prod.label))
+								{
+									if (Verse.Translator.CanTranslate("RecipeMake"))
+									{
+										TaggedString newLabelTS = "RecipeMake".Translate(prod.label);
+										string newLabel = newLabelTS.RawText;
+										if (newLabel != "RecipeMake" && newLabel.Contains(prod.label))
+										{
+											if (r.label != newLabel)
+											{
+												r.label = newLabel;
+												ResetLabelCap(r);
+												recipes++;
+											}
+											else { skipped++; }
+										}
+										else { skipped++; }
+									}
+
+									if (Verse.Translator.CanTranslate("RecipeMakeJobString"))
+									{
+										TaggedString newJobTS = "RecipeMakeJobString".Translate(prod.label);
+										string newJob = newJobTS.RawText;
+										if (newJob != "RecipeMakeJobString" && newJob.Contains(prod.label))
+										{
+											if (r.jobString != newJob)
+											{
+												r.jobString = newJob;
+												jobStrings++;
+											}
+											else { skipped++; }
+										}
+										else { skipped++; }
+									}
+								}
+								else { skipped++; }
+							}
+							else if (r.defName.StartsWith("Administer_"))
+							{
+								ThingDef ing = null;
+								if (r.ingredients != null && r.ingredients.Count > 0 && r.ingredients[0].filter != null)
+								{
+									var allowed = r.ingredients[0].filter.AllowedThingDefs;
+									if (allowed != null)
+									{
+										foreach (var tDef in allowed) { ing = tDef; break; }
+									}
+								}
+								if (ing == null) ing = r.ProducedThingDef;
+
+								if (ing != null && !string.IsNullOrEmpty(ing.label))
+								{
+									if (Verse.Translator.CanTranslate("RecipeAdminister"))
+									{
+										TaggedString newLabelTS = "RecipeAdminister".Translate(ing.label);
+										string newLabel = newLabelTS.RawText;
+										if (newLabel != "RecipeAdminister" && newLabel.Contains(ing.label))
+										{
+											if (r.label != newLabel)
+											{
+												r.label = newLabel;
+												ResetLabelCap(r);
+												recipes++;
+											}
+											else { skipped++; }
+										}
+										else { skipped++; }
+									}
+
+									if (Verse.Translator.CanTranslate("RecipeAdministerJobString"))
+									{
+										TaggedString newJobTS = "RecipeAdministerJobString".Translate(ing.label);
+										string newJob = newJobTS.RawText;
+										if (newJob != "RecipeAdministerJobString" && newJob.Contains(ing.label))
+										{
+											if (r.jobString != newJob)
+											{
+												r.jobString = newJob;
+												jobStrings++;
+											}
+											else { skipped++; }
+										}
+										else { skipped++; }
+									}
+								}
+								else { skipped++; }
+							}
+						}
+						catch
+						{
+							errors++;
+						}
+					}
+				}
+
+				// 2. Пересборка чертежей и каркасов для ThingDef
+				var thingDefs = DefDatabase<ThingDef>.AllDefsListForReading;
+				if (thingDefs != null)
+				{
+					for (int i = 0; i < thingDefs.Count; i++)
+					{
+						var t = thingDefs[i];
+						if (t == null || string.IsNullOrEmpty(t.label)) continue;
+
+						try
+						{
+							if (t.blueprintDef != null)
+							{
+								if (Verse.Translator.CanTranslate("BlueprintLabelExtra"))
+								{
+									TaggedString extraBp = "BlueprintLabelExtra".Translate();
+									if (extraBp.RawText != "BlueprintLabelExtra")
+									{
+										string expected = t.label + extraBp.RawText;
+										if (t.blueprintDef.label != expected)
+										{
+											t.blueprintDef.label = expected;
+											ResetLabelCap(t.blueprintDef);
+											blueprints++;
+										}
+										else { skipped++; }
+									}
+								}
+							}
+
+							if (t.frameDef != null)
+							{
+								if (Verse.Translator.CanTranslate("FrameLabelExtra"))
+								{
+									TaggedString extraFrame = "FrameLabelExtra".Translate();
+									if (extraFrame.RawText != "FrameLabelExtra")
+									{
+										string expected = t.label + extraFrame.RawText;
+										if (t.frameDef.label != expected)
+										{
+											t.frameDef.label = expected;
+											ResetLabelCap(t.frameDef);
+											frames++;
+										}
+										else { skipped++; }
+									}
+								}
+							}
+
+							if (t.installBlueprintDef != null)
+							{
+								if (Verse.Translator.CanTranslate("BlueprintLabelExtra"))
+								{
+									TaggedString extraInstall = "BlueprintLabelExtra".Translate();
+									if (extraInstall.RawText != "BlueprintLabelExtra")
+									{
+										string expected = t.label + extraInstall.RawText;
+										if (t.installBlueprintDef.label != expected)
+										{
+											t.installBlueprintDef.label = expected;
+											ResetLabelCap(t.installBlueprintDef);
+											blueprints++;
+										}
+										else { skipped++; }
+									}
+								}
+							}
+						}
+						catch
+						{
+							errors++;
+						}
+					}
+				}
+			}
+			catch (Exception e)
+			{
+				GATLog.Warn("Ошибка при выполнении RefreshDerivedDefLabels: " + e.Message);
+				errors++;
+			}
+
+			GATLog.Msg("Derived labels refreshed: recipes=" + recipes + ", jobStrings=" + jobStrings + ", blueprints=" + blueprints + ", frames=" + frames + ", skipped=" + skipped + ", errors=" + errors + ".");
 		}
 
 		static DefPostProcessor()
@@ -146,6 +349,11 @@ namespace GlobalAutoTranslator
 							v => { try { captured.SetValue(capturedDef, v); } catch { } });
 					}
 				}
+			}
+
+			if (apply)
+			{
+				RefreshDerivedDefLabels();
 			}
 		}
 

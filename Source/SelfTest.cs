@@ -545,10 +545,30 @@ namespace GlobalAutoTranslator
 				bool r1 = PlaceholderGuard.NeedsTranslation("Изготовить car wiring");
 				bool r2 = PlaceholderGuard.NeedsTranslation("Изготовить engine block");
 				bool r3 = PlaceholderGuard.NeedsTranslation("Изготовить car battery");
-				bool r4 = PlaceholderGuard.NeedsTranslation("Здоровье HP"); // short unit abbreviation -> false
+				bool r4 = !PlaceholderGuard.NeedsTranslation("Здоровье HP");
 
-				bool ok63 = r1 && r2 && r3 && !r4;
-				sb.AppendLine((ok63 ? "[OK]" : "[FAIL]") + " 63. NeedsTranslation for mixed recipe strings: car_wiring=" + r1 + ", engine_block=" + r2 + ", battery=" + r3 + ", HP_unit=" + (!r4));
+				bool ok63 = r1 && r2 && r3 && r4;
+				sb.AppendLine((ok63 ? "[OK]" : "[FAIL]") + " 63. NeedsTranslation for mixed recipe strings: car_wiring=" + r1 + ", engine_block=" + r2 + ", battery=" + r3 + ", HP_unit=" + r4);
+			}
+
+			// 64. Стоп-лист и порог латинских слов в NeedsTranslation (Вес: 2.5 kg -> false, Изготовить car wiring -> true, Здоровье HP -> false)
+			{
+				bool r1 = !PlaceholderGuard.NeedsTranslation("Вес: 2.5 kg");
+				bool r2 = PlaceholderGuard.NeedsTranslation("Изготовить car wiring");
+				bool r3 = !PlaceholderGuard.NeedsTranslation("Здоровье HP");
+
+				bool ok64 = r1 && r2 && r3;
+				sb.AppendLine((ok64 ? "[OK]" : "[FAIL]") + " 64. Stop list and 3+ char threshold: kg_unit=" + r1 + ", car_wiring=" + r2 + ", HP_unit=" + r3);
+			}
+
+			// 65. Защита от петли перевода (IsKnownTranslation)
+			{
+				TranslationCache.Put("ui", "test_src_65_loop", "Переведенный результат 65");
+				bool isKnown = TranslationCache.IsKnownTranslation("Переведенный результат 65");
+				bool notKnown = !TranslationCache.IsKnownTranslation("Рандомная неопубликованная строка 65");
+
+				bool ok65 = isKnown && notKnown;
+				sb.AppendLine((ok65 ? "[OK]" : "[FAIL]") + " 65. Loop guard IsKnownTranslation: known=" + isKnown + ", notKnown=" + notKnown);
 			}
 
 			GATLog.Msg(sb.ToString());

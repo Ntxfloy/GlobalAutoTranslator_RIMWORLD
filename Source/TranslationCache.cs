@@ -615,10 +615,22 @@ namespace GlobalAutoTranslator
 			catch { }
 		}
 
+		private static readonly ConcurrentDictionary<string, byte> knownTranslations =
+			new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+
+		public static bool IsKnownTranslation(string s)
+		{
+			return !string.IsNullOrEmpty(s) && knownTranslations.ContainsKey(s);
+		}
+
 		public static void Put(string context, string source, string translated)
 		{
 			string key = Key(context, source);
 			map[key] = translated;
+			if (!string.IsNullOrEmpty(translated))
+			{
+				knownTranslations[translated] = 1;
+			}
 			if (source != null)
 			{
 				sources[key] = source;
@@ -781,6 +793,7 @@ namespace GlobalAutoTranslator
 			multiline.Clear();
 			multilinePartial.Clear();
 			multilineNoFallback.Clear();
+			knownTranslations.Clear();
 			dirtyShards.Clear();
 			try
 			{

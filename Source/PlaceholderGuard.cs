@@ -184,6 +184,11 @@ namespace GlobalAutoTranslator
 			return list;
 		}
 
+		private static readonly HashSet<string> LatinStopList = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			"kg", "cm", "mm", "ms", "px", "hp", "mp", "xp", "fps", "tps", "hz", "ml", "kb", "mb", "gb", "id", "ui"
+		};
+
 		/// <summary>
 		/// Единый метод проверки: нуждается ли строка в переводе на русский язык.
 		/// Поддерживает чистые и смешанные строки (с исходными именами/русскими фразами).
@@ -219,6 +224,7 @@ namespace GlobalAutoTranslator
 			int lowercaseLatinWords = 0;
 			int latinLetters = 0;
 			int currentWordLen = 0;
+			int wordStartIdx = 0;
 			bool currentWordStartsLower = false;
 
 			for (int i = 0; i < clean.Length; i++)
@@ -228,6 +234,7 @@ namespace GlobalAutoTranslator
 				{
 					if (currentWordLen == 0)
 					{
+						wordStartIdx = i;
 						currentWordStartsLower = char.IsLower(c);
 					}
 					currentWordLen++;
@@ -236,9 +243,10 @@ namespace GlobalAutoTranslator
 				{
 					if (currentWordLen > 0)
 					{
-						latinLetters += currentWordLen;
-						if (currentWordLen >= 2)
+						string word = clean.Substring(wordStartIdx, currentWordLen);
+						if (currentWordLen >= 3 && !LatinStopList.Contains(word))
 						{
+							latinLetters += currentWordLen;
 							meaningfulLatinWords++;
 							if (currentWordStartsLower) lowercaseLatinWords++;
 						}
@@ -248,9 +256,10 @@ namespace GlobalAutoTranslator
 			}
 			if (currentWordLen > 0)
 			{
-				latinLetters += currentWordLen;
-				if (currentWordLen >= 2)
+				string word = clean.Substring(wordStartIdx, currentWordLen);
+				if (currentWordLen >= 3 && !LatinStopList.Contains(word))
 				{
+					latinLetters += currentWordLen;
 					meaningfulLatinWords++;
 					if (currentWordStartsLower) lowercaseLatinWords++;
 				}
@@ -264,7 +273,7 @@ namespace GlobalAutoTranslator
 			if (meaningfulLatinWords >= 3 && latinLetters >= 12)
 				return true;
 
-			return false; // По умолчанию считаем строку уже русской (например "Мод Combat Extended включён", "Здоровье HP")
+			return false; // По умолчанию считаем строку уже русской (например "Мод Combat Extended включён", "Здоровье HP", "Вес: 2.5 kg")
 		}
 
 		/// <summary>Алиас для единообразия.</summary>

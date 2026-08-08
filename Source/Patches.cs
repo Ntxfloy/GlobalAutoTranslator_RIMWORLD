@@ -58,6 +58,7 @@ namespace GlobalAutoTranslator
 		public static void Note(string s)
 		{
 			if (string.IsNullOrEmpty(s)) return;
+			if (TranslationCache.IsKnownTranslation(s)) return;
 			int len = s.Length;
 			if (len < 2 || len > 600) return;
 
