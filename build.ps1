@@ -114,8 +114,8 @@ using System.Reflection;
 [assembly: AssemblyCopyright("Copyright (c) 2026")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
-[assembly: AssemblyVersion("33.3.0.0")]
-[assembly: AssemblyFileVersion("33.3.0.0")]
+[assembly: AssemblyVersion("33.4.0.0")]
+[assembly: AssemblyFileVersion("33.4.0.0")]
 "@
 Set-Content -Path "$SRC_DIR\AssemblyInfo.cs" -Value $assemblyInfo -Encoding UTF8
 

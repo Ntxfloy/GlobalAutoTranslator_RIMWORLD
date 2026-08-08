@@ -106,72 +106,62 @@ namespace GlobalAutoTranslator
 			return true;
 		}
 
+		/// <summary>
+		/// Shared production kernel for applying a derived label to a target Def.
+		/// formatter: takes source.label, returns the expected new label string.
+		/// keyName: the translation key name (e.g. "MeatLabel") used only to reject untranslated keys.
+		/// On exception from formatter: propagates to caller (no mutation of target).
+		/// </summary>
+		public static bool TryApplyDerivedLabelCore(ThingDef source, ThingDef target, System.Func<string, string> formatter, string keyName, ref int applied, ref int skipped)
+		{
+			string newLabel = formatter(source.label);
+			if (newLabel == keyName || !newLabel.Contains(source.label))
+				return false;
+
+			if (target.label != newLabel)
+			{
+				target.label = newLabel;
+				ResetLabelCap(target);
+				applied++;
+				return true;
+			}
+			else
+			{
+				skipped++;
+				return false;
+			}
+		}
+
+		// Production meat label refresh — uses RimWorld Translate, no fallback
 		public static bool TryApplyMeatLabelRefresh(ThingDef source, ThingDef target, bool canMeatLabel, ref int meats, ref int skipped)
 		{
 			if (!canMeatLabel) return false;
 			if (!ShouldRefreshGeneratedMeatLabel(source, target)) return false;
-
-			string newMeat = null;
-			try
-			{
-				TaggedString newMeatTS = "MeatLabel".Translate(source.label);
-				newMeat = newMeatTS.RawText;
-			}
-			catch
-			{
-				newMeat = "MeatLabel (" + source.label + ")";
-			}
-
-			if (newMeat != "MeatLabel" && newMeat.Contains(source.label))
-			{
-				if (target.label != newMeat)
-				{
-					target.label = newMeat;
-					ResetLabelCap(target);
-					meats++;
-					return true;
-				}
-				else
-				{
-					skipped++;
-					return false;
-				}
-			}
-			return false;
+			return TryApplyDerivedLabelCore(source, target, (label) => "MeatLabel".Translate(label).RawText, "MeatLabel", ref meats, ref skipped);
 		}
 
+		// Production corpse label refresh — uses RimWorld Translate, no fallback
 		public static bool TryApplyCorpseLabelRefresh(ThingDef source, ThingDef target, bool canCorpseLabel, ref int corpses, ref int skipped)
 		{
 			if (!canCorpseLabel) return false;
 			if (!ShouldRefreshGeneratedCorpseLabel(source, target)) return false;
+			return TryApplyDerivedLabelCore(source, target, (label) => "CorpseLabel".Translate(label).RawText, "CorpseLabel", ref corpses, ref skipped);
+		}
 
-			string newCorpse = null;
-			try
-			{
-				TaggedString newCorpseTS = "CorpseLabel".Translate(source.label);
-				newCorpse = newCorpseTS.RawText;
-			}
-			catch
-			{
-				newCorpse = "CorpseLabel (" + source.label + ")";
-			}
+		// Test overload: meat label refresh with injectable formatter
+		public static bool TryApplyMeatLabelRefresh(ThingDef source, ThingDef target, bool canMeatLabel, ref int meats, ref int skipped, System.Func<string, string> formatter)
+		{
+			if (!canMeatLabel) return false;
+			if (!ShouldRefreshGeneratedMeatLabel(source, target)) return false;
+			return TryApplyDerivedLabelCore(source, target, formatter, "MeatLabel", ref meats, ref skipped);
+		}
 
-			if (newCorpse != "CorpseLabel" && newCorpse.Contains(source.label))
-			{
-				if (target.label != newCorpse)
-				{
-					target.label = newCorpse;
-					ResetLabelCap(target);
-					corpses++;
-					return true;
-				}
-				else
-				{
-					skipped++;
-					return false;
-				}
-			}
-			return false;
+		// Test overload: corpse label refresh with injectable formatter
+		public static bool TryApplyCorpseLabelRefresh(ThingDef source, ThingDef target, bool canCorpseLabel, ref int corpses, ref int skipped, System.Func<string, string> formatter)
+		{
+			if (!canCorpseLabel) return false;
+			if (!ShouldRefreshGeneratedCorpseLabel(source, target)) return false;
+			return TryApplyDerivedLabelCore(source, target, formatter, "CorpseLabel", ref corpses, ref skipped);
 		}
 
 		public static void RefreshDerivedDefLabels()
