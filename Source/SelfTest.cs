@@ -540,6 +540,17 @@ namespace GlobalAutoTranslator
 				sb.AppendLine((ok62 ? "[OK]" : "[FAIL]") + " 62. IsTooLongForLabel: 350no_n=" + r1 + ", 350with_n=" + r2 + ", 2500with_n=" + r3);
 			}
 
+			// 63. Mixed recipe strings (Изготовить car wiring, Изготовить engine block) return NeedsTranslation == true
+			{
+				bool r1 = PlaceholderGuard.NeedsTranslation("Изготовить car wiring");
+				bool r2 = PlaceholderGuard.NeedsTranslation("Изготовить engine block");
+				bool r3 = PlaceholderGuard.NeedsTranslation("Изготовить car battery");
+				bool r4 = PlaceholderGuard.NeedsTranslation("Здоровье HP"); // short unit abbreviation -> false
+
+				bool ok63 = r1 && r2 && r3 && !r4;
+				sb.AppendLine((ok63 ? "[OK]" : "[FAIL]") + " 63. NeedsTranslation for mixed recipe strings: car_wiring=" + r1 + ", engine_block=" + r2 + ", battery=" + r3 + ", HP_unit=" + (!r4));
+			}
+
 			GATLog.Msg(sb.ToString());
 		}
 	}

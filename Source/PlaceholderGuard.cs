@@ -216,14 +216,20 @@ namespace GlobalAutoTranslator
 
 			// Проверка латиницы в смешанном тексте через ClassifyChar (с поддержкой расширенной латиницы é, ä, ñ, ł, ş)
 			int meaningfulLatinWords = 0;
+			int lowercaseLatinWords = 0;
 			int latinLetters = 0;
 			int currentWordLen = 0;
+			bool currentWordStartsLower = false;
 
 			for (int i = 0; i < clean.Length; i++)
 			{
 				char c = clean[i];
 				if (ClassifyChar(c) == ScriptKind.Latin)
 				{
+					if (currentWordLen == 0)
+					{
+						currentWordStartsLower = char.IsLower(c);
+					}
 					currentWordLen++;
 				}
 				else
@@ -231,7 +237,11 @@ namespace GlobalAutoTranslator
 					if (currentWordLen > 0)
 					{
 						latinLetters += currentWordLen;
-						if (currentWordLen >= 2) meaningfulLatinWords++;
+						if (currentWordLen >= 2)
+						{
+							meaningfulLatinWords++;
+							if (currentWordStartsLower) lowercaseLatinWords++;
+						}
 						currentWordLen = 0;
 					}
 				}
@@ -239,14 +249,22 @@ namespace GlobalAutoTranslator
 			if (currentWordLen > 0)
 			{
 				latinLetters += currentWordLen;
-				if (currentWordLen >= 2) meaningfulLatinWords++;
+				if (currentWordLen >= 2)
+				{
+					meaningfulLatinWords++;
+					if (currentWordStartsLower) lowercaseLatinWords++;
+				}
 			}
 
-			// Требование: не менее 3 латинских слов И не менее 12 латинских букв
+			// Если в смешанной строке есть хотя бы 1 нарицательное латинское слово со строчной буквы (например, "car", "wiring", "block") -> переводить!
+			if (lowercaseLatinWords >= 1)
+				return true;
+
+			// Если латинских слов >= 3 и букв >= 12 (например, длинный английский фрагмент) -> переводить!
 			if (meaningfulLatinWords >= 3 && latinLetters >= 12)
 				return true;
 
-			return false; // По умолчанию считаем строку уже русской
+			return false; // По умолчанию считаем строку уже русской (например "Мод Combat Extended включён", "Здоровье HP")
 		}
 
 		/// <summary>Алиас для единообразия.</summary>
