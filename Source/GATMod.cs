@@ -58,12 +58,27 @@ namespace GlobalAutoTranslator
 		{
 			Settings = GetSettings<GATSettings>();
 			
-			// Выводим версию и информацию в лог при старте
-			System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
-			string asmVersion = asm.GetName().Version.ToString();
-			System.IO.FileInfo fi = new System.IO.FileInfo(asm.Location);
-			GATLog.Msg("Started: v" + ModVersion + " (Asm: " + asmVersion + ", Date: " + fi.LastWriteTime.ToString("o") + ")");
-			GATLog.Msg("Prompt v" + Prompt.PromptVersion + ", Model: " + Settings.model);
+			try
+			{
+				System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
+				string asmVersion = asm.GetName().Version.ToString();
+				string dateStr = "unknown";
+				if (!string.IsNullOrEmpty(asm.Location))
+				{
+					try
+					{
+						System.IO.FileInfo fi = new System.IO.FileInfo(asm.Location);
+						dateStr = fi.LastWriteTime.ToString("o");
+					}
+					catch { }
+				}
+				GATLog.Msg("Started: v" + ModVersion + " (Asm: " + asmVersion + ", Date: " + dateStr + ")");
+				GATLog.Msg("Prompt v" + Prompt.PromptVersion + ", Model: " + (Settings != null ? Settings.model : "null"));
+			}
+			catch (System.Exception ex)
+			{
+				GATLog.Warn("Ошибка в конструкторе GATMod: " + ex.Message);
+			}
 		}
 
 		public override string SettingsCategory()
