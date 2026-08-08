@@ -23,6 +23,26 @@ namespace GlobalAutoTranslator
 
 		private static readonly ConcurrentQueue<Action> pendingApply = new ConcurrentQueue<Action>();
 
+		private static bool derivedDirty;
+		private static float lastRefreshRealtime;
+
+		public static void MarkDerivedDirty()
+		{
+			derivedDirty = true;
+		}
+
+		public static void CheckThrottledRefresh()
+		{
+			if (!derivedDirty) return;
+			float now = UnityEngine.Time.realtimeSinceStartup;
+			if (now - lastRefreshRealtime >= 2.0f)
+			{
+				lastRefreshRealtime = now;
+				derivedDirty = false;
+				RefreshDerivedDefLabels();
+			}
+		}
+
 		/// <summary>Ставит изменение Def в очередь. Безопасно из любого потока.</summary>
 		public static void QueueApply(Action a)
 		{
@@ -42,15 +62,33 @@ namespace GlobalAutoTranslator
 			}
 			if (anyApplied)
 			{
-				RefreshDerivedDefLabels();
+				MarkDerivedDirty();
 			}
+			CheckThrottledRefresh();
 		}
 
 		public static void RefreshDerivedDefLabels()
 		{
-			int recipes = 0, jobStrings = 0, blueprints = 0, frames = 0, skipped = 0, errors = 0;
+			int recipes = 0, jobStrings = 0, blueprints = 0, frames = 0, corpses = 0, meats = 0, terrain = 0, skipped = 0, errors = 0;
 			try
 			{
+				bool canRecipeMake = Verse.Translator.CanTranslate("RecipeMake");
+				bool canRecipeMakeJob = Verse.Translator.CanTranslate("RecipeMakeJobString");
+
+				bool canRecipeAdminister = Verse.Translator.CanTranslate("RecipeAdminister");
+				bool canRecipeAdministerJob = Verse.Translator.CanTranslate("RecipeAdministerJobString");
+
+				bool canBlueprintExtra = Verse.Translator.CanTranslate("BlueprintLabelExtra");
+				string bpExtraText = canBlueprintExtra ? "BlueprintLabelExtra".Translate().RawText : null;
+				if (bpExtraText == "BlueprintLabelExtra") canBlueprintExtra = false;
+
+				bool canFrameExtra = Verse.Translator.CanTranslate("FrameLabelExtra");
+				string frameExtraText = canFrameExtra ? "FrameLabelExtra".Translate().RawText : null;
+				if (frameExtraText == "FrameLabelExtra") canFrameExtra = false;
+
+				bool canCorpseLabel = Verse.Translator.CanTranslate("CorpseLabel");
+				bool canMeatLabel = Verse.Translator.CanTranslate("MeatLabel");
+
 				// 1. Пересборка рецептов Make_* и Administer_*
 				var recipeDefs = DefDatabase<Verse.RecipeDef>.AllDefsListForReading;
 				if (recipeDefs != null)
@@ -67,7 +105,7 @@ namespace GlobalAutoTranslator
 								var prod = r.ProducedThingDef;
 								if (prod != null && !string.IsNullOrEmpty(prod.label))
 								{
-									if (Verse.Translator.CanTranslate("RecipeMake"))
+									if (canRecipeMake)
 									{
 										TaggedString newLabelTS = "RecipeMake".Translate(prod.label);
 										string newLabel = newLabelTS.RawText;
@@ -84,7 +122,7 @@ namespace GlobalAutoTranslator
 										else { skipped++; }
 									}
 
-									if (Verse.Translator.CanTranslate("RecipeMakeJobString"))
+									if (canRecipeMakeJob)
 									{
 										TaggedString newJobTS = "RecipeMakeJobString".Translate(prod.label);
 										string newJob = newJobTS.RawText;
@@ -117,7 +155,7 @@ namespace GlobalAutoTranslator
 
 								if (ing != null && !string.IsNullOrEmpty(ing.label))
 								{
-									if (Verse.Translator.CanTranslate("RecipeAdminister"))
+									if (canRecipeAdminister)
 									{
 										TaggedString newLabelTS = "RecipeAdminister".Translate(ing.label);
 										string newLabel = newLabelTS.RawText;
@@ -134,7 +172,7 @@ namespace GlobalAutoTranslator
 										else { skipped++; }
 									}
 
-									if (Verse.Translator.CanTranslate("RecipeAdministerJobString"))
+									if (canRecipeAdministerJob)
 									{
 										TaggedString newJobTS = "RecipeAdministerJobString".Translate(ing.label);
 										string newJob = newJobTS.RawText;
@@ -160,7 +198,7 @@ namespace GlobalAutoTranslator
 					}
 				}
 
-				// 2. Пересборка чертежей и каркасов для ThingDef
+				// 2. Чертежи, каркасы, трупы (corpseDef) и мясо (meatDef) для ThingDef
 				var thingDefs = DefDatabase<ThingDef>.AllDefsListForReading;
 				if (thingDefs != null)
 				{
@@ -171,61 +209,116 @@ namespace GlobalAutoTranslator
 
 						try
 						{
-							if (t.blueprintDef != null)
+							if (t.blueprintDef != null && canBlueprintExtra)
 							{
-								if (Verse.Translator.CanTranslate("BlueprintLabelExtra"))
+								string expected = t.label + bpExtraText;
+								if (t.blueprintDef.label != expected)
 								{
-									TaggedString extraBp = "BlueprintLabelExtra".Translate();
-									if (extraBp.RawText != "BlueprintLabelExtra")
+									t.blueprintDef.label = expected;
+									ResetLabelCap(t.blueprintDef);
+									blueprints++;
+								}
+								else { skipped++; }
+							}
+
+							if (t.frameDef != null && canFrameExtra)
+							{
+								string expected = t.label + frameExtraText;
+								if (t.frameDef.label != expected)
+								{
+									t.frameDef.label = expected;
+									ResetLabelCap(t.frameDef);
+									frames++;
+								}
+								else { skipped++; }
+							}
+
+							if (t.installBlueprintDef != null && canBlueprintExtra)
+							{
+								string expected = t.label + bpExtraText;
+								if (t.installBlueprintDef.label != expected)
+								{
+									t.installBlueprintDef.label = expected;
+									ResetLabelCap(t.installBlueprintDef);
+									blueprints++;
+								}
+								else { skipped++; }
+							}
+
+							// Трупы (corpseDef)
+							if (t.race != null && t.race.corpseDef != null && canCorpseLabel)
+							{
+								TaggedString newCorpseTS = "CorpseLabel".Translate(t.label);
+								string newCorpse = newCorpseTS.RawText;
+								if (newCorpse != "CorpseLabel" && newCorpse.Contains(t.label))
+								{
+									if (t.race.corpseDef.label != newCorpse)
 									{
-										string expected = t.label + extraBp.RawText;
-										if (t.blueprintDef.label != expected)
-										{
-											t.blueprintDef.label = expected;
-											ResetLabelCap(t.blueprintDef);
-											blueprints++;
-										}
-										else { skipped++; }
+										t.race.corpseDef.label = newCorpse;
+										ResetLabelCap(t.race.corpseDef);
+										corpses++;
 									}
+									else { skipped++; }
 								}
 							}
 
-							if (t.frameDef != null)
+							// Мясо (meatDef)
+							if (t.race != null && t.race.meatDef != null && canMeatLabel)
 							{
-								if (Verse.Translator.CanTranslate("FrameLabelExtra"))
+								TaggedString newMeatTS = "MeatLabel".Translate(t.label);
+								string newMeat = newMeatTS.RawText;
+								if (newMeat != "MeatLabel" && newMeat.Contains(t.label))
 								{
-									TaggedString extraFrame = "FrameLabelExtra".Translate();
-									if (extraFrame.RawText != "FrameLabelExtra")
+									if (t.race.meatDef.label != newMeat)
 									{
-										string expected = t.label + extraFrame.RawText;
-										if (t.frameDef.label != expected)
-										{
-											t.frameDef.label = expected;
-											ResetLabelCap(t.frameDef);
-											frames++;
-										}
-										else { skipped++; }
+										t.race.meatDef.label = newMeat;
+										ResetLabelCap(t.race.meatDef);
+										meats++;
 									}
+									else { skipped++; }
 								}
 							}
+						}
+						catch
+						{
+							errors++;
+						}
+					}
+				}
 
-							if (t.installBlueprintDef != null)
+				// 3. Чертежи и каркасы полов (TerrainDef)
+				var terrainDefs = DefDatabase<Verse.TerrainDef>.AllDefsListForReading;
+				if (terrainDefs != null)
+				{
+					for (int i = 0; i < terrainDefs.Count; i++)
+					{
+						var ter = terrainDefs[i];
+						if (ter == null || string.IsNullOrEmpty(ter.label)) continue;
+
+						try
+						{
+							if (ter.blueprintDef != null && canBlueprintExtra)
 							{
-								if (Verse.Translator.CanTranslate("BlueprintLabelExtra"))
+								string expected = ter.label + bpExtraText;
+								if (ter.blueprintDef.label != expected)
 								{
-									TaggedString extraInstall = "BlueprintLabelExtra".Translate();
-									if (extraInstall.RawText != "BlueprintLabelExtra")
-									{
-										string expected = t.label + extraInstall.RawText;
-										if (t.installBlueprintDef.label != expected)
-										{
-											t.installBlueprintDef.label = expected;
-											ResetLabelCap(t.installBlueprintDef);
-											blueprints++;
-										}
-										else { skipped++; }
-									}
+									ter.blueprintDef.label = expected;
+									ResetLabelCap(ter.blueprintDef);
+									terrain++;
 								}
+								else { skipped++; }
+							}
+
+							if (ter.frameDef != null && canFrameExtra)
+							{
+								string expected = ter.label + frameExtraText;
+								if (ter.frameDef.label != expected)
+								{
+									ter.frameDef.label = expected;
+									ResetLabelCap(ter.frameDef);
+									terrain++;
+								}
+								else { skipped++; }
 							}
 						}
 						catch
@@ -241,7 +334,11 @@ namespace GlobalAutoTranslator
 				errors++;
 			}
 
-			GATLog.Msg("Derived labels refreshed: recipes=" + recipes + ", jobStrings=" + jobStrings + ", blueprints=" + blueprints + ", frames=" + frames + ", skipped=" + skipped + ", errors=" + errors + ".");
+			int totalUpdated = recipes + jobStrings + blueprints + frames + corpses + meats + terrain;
+			if (totalUpdated > 0)
+			{
+				GATLog.Msg("Derived labels refreshed: recipes=" + recipes + ", jobStrings=" + jobStrings + ", blueprints=" + blueprints + ", frames=" + frames + ", corpses=" + corpses + ", meats=" + meats + ", terrain=" + terrain + ", skipped=" + skipped + ", errors=" + errors + ".");
+			}
 		}
 
 		static DefPostProcessor()

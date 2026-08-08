@@ -50,7 +50,7 @@ namespace GlobalAutoTranslator
 
 	public class GATMod : Mod
 	{
-		public const string ModVersion = "33.0";
+		public const string ModVersion = "33.1";
 		public static GATSettings Settings;
 		private static string selfTestResult = "";
 

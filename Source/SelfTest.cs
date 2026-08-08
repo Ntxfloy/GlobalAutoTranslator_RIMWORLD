@@ -571,6 +571,18 @@ namespace GlobalAutoTranslator
 				sb.AppendLine((ok65 ? "[OK]" : "[FAIL]") + " 65. Loop guard IsKnownTranslation: known=" + isKnown + ", notKnown=" + notKnown);
 			}
 
+			// 66. knownTranslations переживает рестарт (Load populates knownTranslations)
+			{
+				TranslationCache.Put("keyed", "test_src_66_load", "Сохраненный результат 66");
+				TranslationCache.Flush();
+				TranslationCache.ClearMemory();
+				TranslationCache.Load();
+				bool isKnownAfterLoad = TranslationCache.IsKnownTranslation("Сохраненный результат 66");
+
+				bool ok66 = isKnownAfterLoad;
+				sb.AppendLine((ok66 ? "[OK]" : "[FAIL]") + " 66. knownTranslations survives Load(): knownAfterLoad=" + isKnownAfterLoad);
+			}
+
 			GATLog.Msg(sb.ToString());
 		}
 	}

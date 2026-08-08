@@ -191,7 +191,17 @@ namespace GlobalAutoTranslator
 
 		public static string RootDir
 		{
-			get { return Path.Combine(GenFilePaths.SaveDataFolderPath, "GlobalTranslator"); }
+			get
+			{
+				try
+				{
+					return Path.Combine(GenFilePaths.SaveDataFolderPath, "GlobalTranslator");
+				}
+				catch
+				{
+					return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MockCache");
+				}
+			}
 		}
 
 		public static string CacheDir { get { return Path.Combine(RootDir, "cache"); } }
@@ -693,6 +703,7 @@ namespace GlobalAutoTranslator
 							string srcText = UnescapeCell(parts[1]);
 							string val = UnescapeCell(parts[2]);
 							map[k] = val;
+							if (!string.IsNullOrEmpty(val)) knownTranslations[val] = 1;
 							if (srcText.Length > 0)
 							{
 								sources[k] = srcText;
@@ -704,7 +715,9 @@ namespace GlobalAutoTranslator
 						else if (parts.Length == 2)
 						{
 							// Старый формат без колонки источника.
-							map[parts[0]] = UnescapeCell(parts[1]);
+							string val = UnescapeCell(parts[1]);
+							map[parts[0]] = val;
+							if (!string.IsNullOrEmpty(val)) knownTranslations[val] = 1;
 							loaded++;
 							legacy++;
 						}
@@ -785,7 +798,7 @@ namespace GlobalAutoTranslator
 			}
 		}
 
-		public static void Clear()
+		public static void ClearMemory()
 		{
 			map.Clear();
 			sources.Clear();
@@ -795,6 +808,11 @@ namespace GlobalAutoTranslator
 			multilineNoFallback.Clear();
 			knownTranslations.Clear();
 			dirtyShards.Clear();
+		}
+
+		public static void Clear()
+		{
+			ClearMemory();
 			try
 			{
 				if (Directory.Exists(CacheDir))
