@@ -6,10 +6,13 @@ Thumbs.db
 *.user
 *.suo
 
-# Build outputs (keep Assemblies/GlobalAutoTranslator.dll)
+# Build outputs & temporary files
 bin/
 obj/
 *.tmp
+csc_err.txt
+csc_out.txt
+compile_result.txt
 
 # Sensitive, proxy, and temporary files
 config.yaml
@@ -18,20 +21,29 @@ config.yaml
 roslyn/
 cache/
 *.log
+scratch/
 
 # Generated on every build
 Source/AssemblyInfo.cs
 
-# Compiled binaries (tracked via release only)
+# Compiled binaries
 Assemblies/*.dll
 
 # Test harness binaries (not source)
 tests/*.dll
 tests/*.exe
 
-# Old bundle files (use round32_bundle.txt)
+# Bundles, reports, diffs, and recon files
+round*
 *.bundle.txt
+*.diff
+*_bundle.txt
+*_recon.txt
+*_report.md
 
-# Scripts that must not be committed
+# Helper scripts that must not be committed
 run_game.ps1
 restore.ps1
+check_gitignore.ps1
+write_gitignore.ps1
+compile_test*
