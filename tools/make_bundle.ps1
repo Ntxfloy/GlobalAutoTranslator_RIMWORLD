@@ -44,10 +44,10 @@ if (Test-Path "scratch\selftest.log") {
 
 # 5. Build Report text
 $reportText = ""
-if (Test-Path "round33_2_report.md") {
-    $reportText = [System.IO.File]::ReadAllText("round33_2_report.md", $utf8NoBom)
+if (Test-Path "round33_3_report.md") {
+    $reportText = [System.IO.File]::ReadAllText("round33_3_report.md", $utf8NoBom)
 } else {
-    $reportText = "Report round33_2_report.md not found."
+    $reportText = "Report round33_3_report.md not found."
 }
 
 # 6. Assemble Bundle
@@ -103,7 +103,7 @@ foreach ($file in $filesToInclude) {
 
 [void]$sb.AppendLine("===== END OF BUNDLE =====")
 
-$bundlePath = 'd:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\round33_2_bundle.txt'
+$bundlePath = 'd:\Ayder_dontdelete\rimka_translate\GlobalAutoTranslator\round33_3_bundle.txt'
 [System.IO.File]::WriteAllText($bundlePath, $sb.ToString(), $utf8NoBom)
 
 $bundleItem = Get-Item $bundlePath

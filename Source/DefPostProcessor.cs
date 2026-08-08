@@ -98,12 +98,80 @@ namespace GlobalAutoTranslator
 		public static bool ShouldRefreshGeneratedCorpseLabel(ThingDef source, ThingDef target)
 		{
 			if (source == null || target == null) return false;
-			if (source.category != Verse.ThingCategory.Pawn && source.race == null) return false;
+			if (source.category != Verse.ThingCategory.Pawn || source.race == null) return false;
 			if (string.IsNullOrEmpty(source.defName)) return false;
 			if (!string.Equals(target.defName, "Corpse_" + source.defName, StringComparison.Ordinal)) return false;
 			if (target.ingestible == null) return false;
 			if (!object.ReferenceEquals(target.ingestible.sourceDef, source)) return false;
 			return true;
+		}
+
+		public static bool TryApplyMeatLabelRefresh(ThingDef source, ThingDef target, bool canMeatLabel, ref int meats, ref int skipped)
+		{
+			if (!canMeatLabel) return false;
+			if (!ShouldRefreshGeneratedMeatLabel(source, target)) return false;
+
+			string newMeat = null;
+			try
+			{
+				TaggedString newMeatTS = "MeatLabel".Translate(source.label);
+				newMeat = newMeatTS.RawText;
+			}
+			catch
+			{
+				newMeat = "MeatLabel (" + source.label + ")";
+			}
+
+			if (newMeat != "MeatLabel" && newMeat.Contains(source.label))
+			{
+				if (target.label != newMeat)
+				{
+					target.label = newMeat;
+					ResetLabelCap(target);
+					meats++;
+					return true;
+				}
+				else
+				{
+					skipped++;
+					return false;
+				}
+			}
+			return false;
+		}
+
+		public static bool TryApplyCorpseLabelRefresh(ThingDef source, ThingDef target, bool canCorpseLabel, ref int corpses, ref int skipped)
+		{
+			if (!canCorpseLabel) return false;
+			if (!ShouldRefreshGeneratedCorpseLabel(source, target)) return false;
+
+			string newCorpse = null;
+			try
+			{
+				TaggedString newCorpseTS = "CorpseLabel".Translate(source.label);
+				newCorpse = newCorpseTS.RawText;
+			}
+			catch
+			{
+				newCorpse = "CorpseLabel (" + source.label + ")";
+			}
+
+			if (newCorpse != "CorpseLabel" && newCorpse.Contains(source.label))
+			{
+				if (target.label != newCorpse)
+				{
+					target.label = newCorpse;
+					ResetLabelCap(target);
+					corpses++;
+					return true;
+				}
+				else
+				{
+					skipped++;
+					return false;
+				}
+			}
+			return false;
 		}
 
 		public static void RefreshDerivedDefLabels()
@@ -285,37 +353,15 @@ namespace GlobalAutoTranslator
 							}
 
 							// Трупы (corpseDef)
-							if (canCorpseLabel && t.race != null && ShouldRefreshGeneratedCorpseLabel(t, t.race.corpseDef))
+							if (t.race != null)
 							{
-								TaggedString newCorpseTS = "CorpseLabel".Translate(t.label);
-								string newCorpse = newCorpseTS.RawText;
-								if (newCorpse != "CorpseLabel" && newCorpse.Contains(t.label))
-								{
-									if (t.race.corpseDef.label != newCorpse)
-									{
-										t.race.corpseDef.label = newCorpse;
-										ResetLabelCap(t.race.corpseDef);
-										corpses++;
-									}
-									else { skipped++; }
-								}
+								TryApplyCorpseLabelRefresh(t, t.race.corpseDef, canCorpseLabel, ref corpses, ref skipped);
 							}
 
 							// Мясо (meatDef)
-							if (canMeatLabel && t.race != null && ShouldRefreshGeneratedMeatLabel(t, t.race.meatDef))
+							if (t.race != null)
 							{
-								TaggedString newMeatTS = "MeatLabel".Translate(t.label);
-								string newMeat = newMeatTS.RawText;
-								if (newMeat != "MeatLabel" && newMeat.Contains(t.label))
-								{
-									if (t.race.meatDef.label != newMeat)
-									{
-										t.race.meatDef.label = newMeat;
-										ResetLabelCap(t.race.meatDef);
-										meats++;
-									}
-									else { skipped++; }
-								}
+								TryApplyMeatLabelRefresh(t, t.race.meatDef, canMeatLabel, ref meats, ref skipped);
 							}
 						}
 						catch

@@ -93,7 +93,10 @@ $SRC_DIR  = "$SCRIPT_DIR\Source"
 $OUT_DLL  = "$SCRIPT_DIR\Assemblies\GlobalAutoTranslator.dll"
 $MODS_DST = Join-Path $RimWorldRoot "Mods\GlobalAutoTranslator"
 
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OUT_DLL) | Out-Null
+# Clean project Assemblies directory before build
+$assembliesDir = Split-Path -Parent $OUT_DLL
+if (Test-Path $assembliesDir) { Remove-Item $assembliesDir -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $assembliesDir | Out-Null
 
 foreach ($p in @($MANAGED, $HARMONY, $CSC)) {
     if (-not (Test-Path $p)) { throw "Not found: $p" }
@@ -111,8 +114,8 @@ using System.Reflection;
 [assembly: AssemblyCopyright("Copyright (c) 2026")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
-[assembly: AssemblyVersion("33.2.0.0")]
-[assembly: AssemblyFileVersion("33.2.0.0")]
+[assembly: AssemblyVersion("33.3.0.0")]
+[assembly: AssemblyFileVersion("33.3.0.0")]
 "@
 Set-Content -Path "$SRC_DIR\AssemblyInfo.cs" -Value $assemblyInfo -Encoding UTF8
 
@@ -148,16 +151,22 @@ Write-Host "[INSTALL] Deploying to Mods..." -ForegroundColor Cyan
 if (Test-Path $MODS_DST) { Remove-Item $MODS_DST -Recurse -Force }
 New-Item -ItemType Directory -Path $MODS_DST | Out-Null
 
-foreach ($dir in @("About", "Assemblies", "Languages", "proxy")) {
+foreach ($dir in @("About", "Languages", "proxy")) {
     $srcPath = "$SCRIPT_DIR\$dir"
     if (Test-Path $srcPath) {
         Copy-Item -Path $srcPath -Destination "$MODS_DST\$dir" -Recurse
     }
 }
+
+# Deploy Assemblies explicitly: only copy GlobalAutoTranslator.dll
+$modAssembliesDst = Join-Path $MODS_DST "Assemblies"
+New-Item -ItemType Directory -Force -Path $modAssembliesDst | Out-Null
+Copy-Item -Path $OUT_DLL -Destination "$modAssembliesDst\GlobalAutoTranslator.dll" -Force
+
 if (Test-Path "$SCRIPT_DIR\README.md") {
     Copy-Item "$SCRIPT_DIR\README.md" "$MODS_DST\README.md"
 }
 
 Write-Host "[INSTALL] Done: $MODS_DST" -ForegroundColor Green
-Write-Host "[INSTALL] Contents:" -ForegroundColor Yellow
-Get-ChildItem $MODS_DST -Recurse | Select-Object FullName
+Write-Host "[INSTALL] Active Assemblies Contents:" -ForegroundColor Yellow
+Get-ChildItem $modAssembliesDst | Select-Object FullName, Length, LastWriteTime

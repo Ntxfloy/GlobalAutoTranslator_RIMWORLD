@@ -582,11 +582,12 @@ namespace GlobalAutoTranslator
 				sb.AppendLine((ok66 ? "[OK]" : "[FAIL]") + " 66. knownTranslations survives Load(): knownAfterLoad=" + isKnownAfterLoad);
 			}
 
-			// 67. D-12 Regression tests: ShouldRefreshGeneratedMeatLabel & ShouldRefreshGeneratedCorpseLabel
+			// 67. D-12 Production methods regression tests: TryApplyMeatLabelRefresh & TryApplyCorpseLabelRefresh
 			{
 				System.Func<ThingDef> createThingDef = () => (ThingDef)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(ThingDef));
+				int dummyMeats = 0, dummyCorpses = 0, dummySkipped = 0;
 
-				// 1. Shared Steel (non-flesh mech) -> false
+				// 1. Shared Steel (non-flesh mech) -> 2 вызова боевого метода НЕ меняют Steel.label
 				var steel = createThingDef();
 				steel.defName = "Steel";
 				steel.label = "сталь";
@@ -597,9 +598,12 @@ namespace GlobalAutoTranslator
 				mech.category = Verse.ThingCategory.Pawn;
 				mech.race = new Verse.RaceProperties { hasMeat = false };
 				mech.race.meatDef = steel;
-				bool r1 = !DefPostProcessor.ShouldRefreshGeneratedMeatLabel(mech, steel);
 
-				// 2. Собственное мясо (flesh pawn with Meat_TestCow and matching sourceDef) -> true
+				bool appSteel1 = DefPostProcessor.TryApplyMeatLabelRefresh(mech, steel, true, ref dummyMeats, ref dummySkipped);
+				bool appSteel2 = DefPostProcessor.TryApplyMeatLabelRefresh(mech, steel, true, ref dummyMeats, ref dummySkipped);
+				bool r1 = !appSteel1 && !appSteel2 && steel.label == "сталь";
+
+				// 2. Собственное мясо (Meat_TestCow) -> первый вызов меняет label, второй вызов идемпотентен (не меняет)
 				var cow = createThingDef();
 				cow.defName = "TestCow";
 				cow.label = "корова";
@@ -611,18 +615,24 @@ namespace GlobalAutoTranslator
 				cowMeat.label = "мясо";
 				cowMeat.ingestible = new RimWorld.IngestibleProperties { sourceDef = cow };
 				cow.race.meatDef = cowMeat;
-				bool r2 = DefPostProcessor.ShouldRefreshGeneratedMeatLabel(cow, cowMeat);
 
-				// 3. useMeatFrom -> false
+				bool appCow1 = DefPostProcessor.TryApplyMeatLabelRefresh(cow, cowMeat, true, ref dummyMeats, ref dummySkipped);
+				string meatAfter1 = cowMeat.label;
+				bool appCow2 = DefPostProcessor.TryApplyMeatLabelRefresh(cow, cowMeat, true, ref dummyMeats, ref dummySkipped);
+				string meatAfter2 = cowMeat.label;
+				bool r2 = appCow1 && !appCow2 && (meatAfter1 == meatAfter2);
+
+				// 3. useMeatFrom -> false (не меняет target)
 				var pig = createThingDef();
 				pig.defName = "TestPig";
 				pig.label = "свинья";
 				pig.category = Verse.ThingCategory.Pawn;
 				pig.race = new Verse.RaceProperties { hasMeat = true, useMeatFrom = cow };
 				pig.race.meatDef = cowMeat;
-				bool r3 = !DefPostProcessor.ShouldRefreshGeneratedMeatLabel(pig, cowMeat);
+				bool appPig = DefPostProcessor.TryApplyMeatLabelRefresh(pig, cowMeat, true, ref dummyMeats, ref dummySkipped);
+				bool r3 = !appPig && (cowMeat.label == meatAfter1);
 
-				// 4. Custom meatLabel -> false
+				// 4. Custom meatLabel -> false (не меняет target)
 				var deer = createThingDef();
 				deer.defName = "TestDeer";
 				deer.label = "олень";
@@ -634,31 +644,48 @@ namespace GlobalAutoTranslator
 				deerMeat.label = "оленина";
 				deerMeat.ingestible = new RimWorld.IngestibleProperties { sourceDef = deer };
 				deer.race.meatDef = deerMeat;
-				bool r4 = !DefPostProcessor.ShouldRefreshGeneratedMeatLabel(deer, deerMeat);
+				bool appDeer = DefPostProcessor.TryApplyMeatLabelRefresh(deer, deerMeat, true, ref dummyMeats, ref dummySkipped);
+				bool r4 = !appDeer && (deerMeat.label == "оленина");
 
-				// 5. Corpse ownership
+				// 5. Corpse ownership + идемпотентность (два вызова)
 				var cowCorpse = createThingDef();
 				cowCorpse.defName = "Corpse_TestCow";
 				cowCorpse.label = "труп";
 				cowCorpse.ingestible = new RimWorld.IngestibleProperties { sourceDef = cow };
 				cow.race.corpseDef = cowCorpse;
-				bool r5_valid = DefPostProcessor.ShouldRefreshGeneratedCorpseLabel(cow, cowCorpse);
+
+				bool appCorpse1 = DefPostProcessor.TryApplyCorpseLabelRefresh(cow, cowCorpse, true, ref dummyCorpses, ref dummySkipped);
+				string corpseAfter1 = cowCorpse.label;
+				bool appCorpse2 = DefPostProcessor.TryApplyCorpseLabelRefresh(cow, cowCorpse, true, ref dummyCorpses, ref dummySkipped);
+				string corpseAfter2 = cowCorpse.label;
+				bool r5_valid = appCorpse1 && !appCorpse2 && (corpseAfter1 == corpseAfter2);
 
 				var wrongCorpse = createThingDef();
 				wrongCorpse.defName = "Corpse_Wrong";
 				wrongCorpse.label = "чужой труп";
 				wrongCorpse.ingestible = new RimWorld.IngestibleProperties { sourceDef = pig };
-				bool r5_wrong = !DefPostProcessor.ShouldRefreshGeneratedCorpseLabel(cow, wrongCorpse);
+				bool appWrongCorpse = DefPostProcessor.TryApplyCorpseLabelRefresh(cow, wrongCorpse, true, ref dummyCorpses, ref dummySkipped);
+				bool r5_wrong = !appWrongCorpse;
 				bool r5 = r5_valid && r5_wrong;
 
-				// 6. Идемпотентность (повторный вызов от исходного cow.label)
-				string expectedMeat1 = "мясо (" + cow.label + ")";
-				cowMeat.label = expectedMeat1;
-				string expectedMeat2 = "мясо (" + cow.label + ")"; // Повторный вызов от cow.label не удваивает скобки
-				bool r6 = expectedMeat1 == expectedMeat2;
+				// 6. Отрицательный случай: non-Pawn ThingDef с race != null для corpse -> false
+				var itemBuilding = createThingDef();
+				itemBuilding.defName = "TestBuilding";
+				itemBuilding.label = "постройка";
+				itemBuilding.category = Verse.ThingCategory.Building;
+				itemBuilding.race = new Verse.RaceProperties { hasMeat = false };
+
+				var bldgCorpse = createThingDef();
+				bldgCorpse.defName = "Corpse_TestBuilding";
+				bldgCorpse.label = "труп постройки";
+				bldgCorpse.ingestible = new RimWorld.IngestibleProperties { sourceDef = itemBuilding };
+				itemBuilding.race.corpseDef = bldgCorpse;
+
+				bool appNonPawnCorpse = DefPostProcessor.TryApplyCorpseLabelRefresh(itemBuilding, bldgCorpse, true, ref dummyCorpses, ref dummySkipped);
+				bool r6 = !appNonPawnCorpse;
 
 				bool ok67 = r1 && r2 && r3 && r4 && r5 && r6;
-				sb.AppendLine((ok67 ? "[OK]" : "[FAIL]") + " 67. D-12 Regression tests (meat & corpse ownership): steel=" + r1 + ", ownMeat=" + r2 + ", useMeatFrom=" + r3 + ", customLabel=" + r4 + ", corpse=" + r5 + ", idempotency=" + r6);
+				sb.AppendLine((ok67 ? "[OK]" : "[FAIL]") + " 67. D-12 Production methods regression tests: steel=" + r1 + ", ownMeat=" + r2 + ", useMeatFrom=" + r3 + ", customLabel=" + r4 + ", corpse=" + r5 + ", nonPawnCorpse=" + r6);
 			}
 
 			GATLog.Msg(sb.ToString());

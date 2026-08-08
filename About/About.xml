@@ -11,7 +11,7 @@
   <supportedVersions>
     <li>1.6</li>
   </supportedVersions>
-  <modVersion>33.2</modVersion>
+  <modVersion>33.3</modVersion>
   <modDependencies>
     <li>
       <packageId>brrainz.harmony</packageId>
